@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Weak, Arc};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
 use async_trait::async_trait;
@@ -177,6 +177,20 @@ impl SessionConfig {
 
 impl Session {
 
+    // In situations where need to pass around a reference to a Session internally but need
+    // to avoid creating a circular reference (such as for the task spawned to process
+    // backend events) we can instead share a Weak<> reference to the SessionInner and then
+    // on-demand (when processing a backend event) we can `upgrade` the reference to an `Arc`
+    // and then use this api to re`wrap()` the SessionInner into a bona fide `Session`.
+    //
+    // Note: we follow the same Weak ref + upgrade->wrap() pattern in the backends too when
+    // we need to register callbacks with the OS that will need to reference backend
+    // session state but shouldn't create a circular reference that makes it impossible to
+    // drop the backend session state
+    fn wrap(inner: Arc<SessionInner>) -> Self {
+        Self { inner }
+    }
+
     async fn start(config: SessionConfig) -> Result<Self> {
         let (broadcast_sender, _) = broadcast::channel(16);
 
@@ -208,8 +222,15 @@ impl Session {
             }),
         };
 
-        let session_clone = session.clone();
-        tokio::spawn(async move { session_clone.run(platform_bus_rx).await });
+        // XXX: This task (which will be responsible for processing all backend
+        // events) is only given a Weak reference to the session, otherwise
+        // it would introduce a circular reference and it wouldn't be possible to
+        // drop a Session. The task will temporarily upgrade this to a strong
+        // reference only while actually processing a backend event, and the
+        // task will also be able to recognise when the TX end of the platform_bus
+        // closes.
+        let weak_session = Arc::downgrade(&session.inner);
+        tokio::spawn(async move { Session::run_backend_task(weak_session, platform_bus_rx).await });
 
         Ok(session)
     }
@@ -225,12 +246,23 @@ impl Session {
         }
     }
 
-    async fn run(self, platform_bus: mpsc::UnboundedReceiver<PlatformEvent>) {
-        trace!("Processing platform bus...");
+    async fn run_backend_task(weak_session_inner: Weak<SessionInner>, platform_bus: mpsc::UnboundedReceiver<PlatformEvent>) {
+        trace!("Starting task to process backend events from the platform_bus...");
 
         let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(platform_bus);
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
+
+            // We only hold a strong reference back to the Session while we're
+            // processing a backend event otherwise we would be holding a circular reference...
+            let session = match weak_session_inner.upgrade() {
+                Some(strong_inner) => Session::wrap(strong_inner),
+                None => {
+                    trace!("Exiting backend event processor task since Session has been dropped");
+                    break;
+                }
+            };
+
             match event {
                 PlatformEvent::PeripheralFound { peripheral_handle } => {
                     // XXX: we actually defer notifying the app until we at least know the name + address
@@ -238,7 +270,7 @@ impl Session {
                     // and then add an error check later that the state is expected to exist.
                 }
                 PlatformEvent::PeripheralConnected { peripheral_handle } => {
-                    let peripheral_state = self.get_peripheral_state(peripheral_handle);
+                    let peripheral_state = session.get_peripheral_state(peripheral_handle);
                     let mut state_guard = peripheral_state.inner.write().unwrap();
 
                     if state_guard.is_connected != true {
@@ -248,13 +280,13 @@ impl Session {
                         state_guard.is_connected = true;
 
                         trace!("Notifying peripheral {} connected", state_guard.address.as_ref().unwrap().to_string());
-                        let _ = self.inner.event_bus.send(Event::PeripheralConnected(Peripheral::wrap(self.clone(), peripheral_handle)));
+                        let _ = session.inner.event_bus.send(Event::PeripheralConnected(Peripheral::wrap(session.clone(), peripheral_handle)));
                     } else {
                         warn!("Spurious, unbalanced/redundant PeripheralConnected notification from backend");
                     }
                 }
                 PlatformEvent::PeripheralDisconnected { peripheral_handle } => {
-                    let peripheral_state = self.get_peripheral_state(peripheral_handle);
+                    let peripheral_state = session.get_peripheral_state(peripheral_handle);
                     let mut state_guard = peripheral_state.inner.write().unwrap();
 
                     if state_guard.is_connected != false {
@@ -264,13 +296,13 @@ impl Session {
                         state_guard.is_connected = false;
 
                         trace!("Notifying peripheral {} disconnected", state_guard.address.as_ref().unwrap().to_string());
-                        let _ = self.inner.event_bus.send(Event::PeripheralDisconnected(Peripheral::wrap(self.clone(), peripheral_handle)));
+                        let _ = session.inner.event_bus.send(Event::PeripheralDisconnected(Peripheral::wrap(session.clone(), peripheral_handle)));
                     } else {
                         warn!("Spurious, unbalanced/redundant PeripheralDisonnected notification from backend");
                     }
                 }
                 PlatformEvent::PeripheralPropertySet { peripheral_handle, property } => {
-                    let peripheral_state = self.get_peripheral_state(peripheral_handle);
+                    let peripheral_state = session.get_peripheral_state(peripheral_handle);
 
                     //
                     // XXX: BEWARE: This is a std::sync lock so we need to avoid awaiting or taking too long
@@ -384,8 +416,8 @@ impl Session {
                     // We wait until we have and address and a name before advertising peripherals
                     // to applications...
                     if state_guard.advertised == false && state_guard.name != None && state_guard.address != None {
-                        let _ = self.inner.event_bus.send(Event::PeripheralFound {
-                            peripheral: Peripheral::wrap(self.clone(), peripheral_handle),
+                        let _ = session.inner.event_bus.send(Event::PeripheralFound {
+                            peripheral: Peripheral::wrap(session.clone(), peripheral_handle),
                             address: state_guard.address.as_ref().unwrap().to_owned(),
                             name: state_guard.name.as_ref().unwrap().clone()
                         });
@@ -393,25 +425,25 @@ impl Session {
 
                         // Also notify the app about any other properties we we're already tracking for the peripheral...
 
-                        //let _ = self.inner.event_bus.send(Event::DevicePropertyChanged(Peripheral::wrap(self.clone(), peripheral_handle), PeripheralPropertyId::Address));
-                        let _ = self.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(self.clone(), peripheral_handle), PeripheralPropertyId::Name));
+                        //let _ = session.inner.event_bus.send(Event::DevicePropertyChanged(Peripheral::wrap(session.clone(), peripheral_handle), PeripheralPropertyId::Address));
+                        let _ = session.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(session.clone(), peripheral_handle), PeripheralPropertyId::Name));
                         if state_guard.address_type.is_some() {
-                            let _ = self.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(self.clone(), peripheral_handle), PeripheralPropertyId::AddressType));
+                            let _ = session.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(session.clone(), peripheral_handle), PeripheralPropertyId::AddressType));
                         }
                         if state_guard.tx_power.is_some() {
-                            let _ = self.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(self.clone(), peripheral_handle), PeripheralPropertyId::TxPower));
+                            let _ = session.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(session.clone(), peripheral_handle), PeripheralPropertyId::TxPower));
                         }
                         if state_guard.rssi.is_some() {
-                            let _ = self.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(self.clone(), peripheral_handle), PeripheralPropertyId::Rssi));
+                            let _ = session.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(session.clone(), peripheral_handle), PeripheralPropertyId::Rssi));
                         }
                         if !state_guard.manufacturer_data.is_empty() {
-                            let _ = self.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(self.clone(), peripheral_handle), PeripheralPropertyId::ManufacturerData));
+                            let _ = session.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(session.clone(), peripheral_handle), PeripheralPropertyId::ManufacturerData));
                         }
                         if !state_guard.service_data.is_empty() {
-                            let _ = self.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(self.clone(), peripheral_handle), PeripheralPropertyId::ServiceData));
+                            let _ = session.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(session.clone(), peripheral_handle), PeripheralPropertyId::ServiceData));
                         }
                         if !state_guard.services.is_empty() {
-                            let _ = self.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(self.clone(), peripheral_handle), PeripheralPropertyId::Services));
+                            let _ = session.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(session.clone(), peripheral_handle), PeripheralPropertyId::Services));
                         }
                     }
                     /*
@@ -427,11 +459,13 @@ impl Session {
                     */
                     if let Some(changed_prop) = changed_prop {
                         trace!("Notifying property {:?} changed", changed_prop);
-                        let _ = self.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(self.clone(), peripheral_handle), changed_prop));
+                        let _ = session.inner.event_bus.send(Event::PeripheralPropertyChanged(Peripheral::wrap(session.clone(), peripheral_handle), changed_prop));
                     }
                 }
             }
         }
+
+        trace!("Finished task processing backend events from the platform_bus");
     }
 
     pub fn events(&self) -> Result<impl Stream<Item = Event>> {
