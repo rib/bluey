@@ -29,8 +29,17 @@ struct SessionInner {
     // The public-facing event stream
     event_bus: broadcast::Sender<Event>,
 
-    // The private stream of events from the backend
+    // A union/enum of all the available backend implementations.
+    // In general for a given platform this will likely only include
+    // one for the current OS and one 'fake' backend that can be
+    // chosen when configuring a session before start()ing it.
     platform: PlatformSessionImpl,
+
+    // There is also a 'platform_bus' that serves as a stream of events
+    // from the platform backend and a task associated with this frontend
+    // which gets spawned during `start()`. One end is handed directly to
+    // the backend and the other is passed into the task that will process
+    // backend events, so we don't actually store the RX end here.
 
     // Note: we have a (tokio) mutex here to synchronize while starting/stopping
     // scanning, not just for maintaining this is_scanning itself, so this can't
