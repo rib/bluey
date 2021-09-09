@@ -1,28 +1,34 @@
 #![allow(unused_imports)]
 
-use std::collections::{HashMap, HashSet};
-use std::convert::TryInto;
 use ::uuid::Uuid;
 use anyhow::anyhow;
-use serde::{Serialize, Deserialize};
-use std::fmt;
-use std::str::FromStr;
-use std::iter::Extend;
 use arrayvec::ArrayVec;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::convert::TryInto;
+use std::fmt;
+use std::iter::Extend;
+use std::str::FromStr;
 
-mod uuid;
+pub mod uuid;
+
+pub mod session;
 
 pub mod peripheral;
 use peripheral::Peripheral;
 
-pub mod session;
+pub mod service;
+use service::Service;
+
+pub mod characteristic;
+use characteristic::Characteristic;
 
 #[cfg(target_os = "windows")]
 mod winrt;
 
 mod fake;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MacAddressType {
     Public,
     Random,
@@ -33,14 +39,17 @@ pub struct MAC(u64);
 impl fmt::Display for MAC {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let bytes = u64::to_le_bytes(self.0);
-        write!(f, "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5])
+        write!(
+            f,
+            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+        )
     }
 }
 
-/// A platform-specific unique identifier for Bluetooth devices
+/// A backend-specific unique identifier for Bluetooth devices
 ///
-/// The underlying hardware MAC address is directly exposed on platforms where
+/// The underlying hardware MAC address is directly exposed on backends where
 /// this is supported.
 ///
 /// An address can be serialized/deserialized such that it's possible for
@@ -90,11 +99,13 @@ fn try_u64_from_mac48_str(s: &str) -> Option<u64> {
         if parts.len() != 6 {
             return None;
         }
-        let mut bytes =  [0u8; 8];
+        let mut bytes = [0u8; 8];
         for i in 0..6 {
             bytes[i] = match u8::from_str_radix(parts[i], 16) {
                 Ok(v) => v,
-                Err(_e) => { return None; }
+                Err(_e) => {
+                    return None;
+                }
             };
         }
         Some(u64::from_le_bytes(bytes))
@@ -108,7 +119,7 @@ impl FromStr for Address {
     fn from_str(s: &str) -> std::result::Result<Self, std::convert::Infallible> {
         match try_u64_from_mac48_str(s) {
             Some(val) => Ok(Address::MAC(MAC(val))),
-            None => Ok(Address::String(s.to_string()))
+            None => Ok(Address::String(s.to_string())),
         }
     }
 }
@@ -124,7 +135,6 @@ fn mac_two_way() {
     assert_eq!(str, "18c2a267-a539-4423-aecc-edeeb2784bcc");
 }
 
-
 #[derive(Clone, Copy, Debug)]
 pub enum AddressType {
     PublicMAC,
@@ -133,10 +143,10 @@ pub enum AddressType {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct PlatformPeripheralHandle(u32);
+struct PeripheralHandle(u32);
 
 #[derive(Clone, Debug)]
-enum PlatformPeripheralProperty {
+enum BackendPeripheralProperty {
     Name(String),
     Address(Address),
     AddressType(AddressType),
@@ -144,7 +154,7 @@ enum PlatformPeripheralProperty {
     TxPower(i16),
     ManufacturerData(HashMap<u16, Vec<u8>>),
     ServiceData(HashMap<Uuid, Vec<u8>>),
-    Services(Vec<Uuid>),
+    ServiceIds(Vec<Uuid>),
 }
 
 /*
@@ -163,7 +173,7 @@ enum PeripheralProperty {
 */
 
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PeripheralPropertyId {
     Name,
     //Address,
@@ -172,40 +182,153 @@ pub enum PeripheralPropertyId {
     TxPower,
     ManufacturerData,
     ServiceData,
-    Services,
+    ServiceIds,
+    PrimaryServices,
+}
+
+// On backends where it's supported then a ServiceHandle should
+// correspond to the underlying ATT attribute handle, or else
+// a similar, sortable value that represents the ordering of services
+// as they are on the device if known.
+//
+// Note: the handle should only be considered for ordering primary
+// services. For included services we want to preserve the order
+// of the include attributes themselves, not the referenced
+// services.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct ServiceHandle(u16);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct CharacteristicHandle(u16);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CacheMode {
+    Cached,
+    Uncached,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum PlatformEvent {
+pub(crate) enum BackendEvent {
     PeripheralFound {
-        peripheral_handle: PlatformPeripheralHandle,
+        peripheral_handle: PeripheralHandle,
     },
     PeripheralPropertySet {
-        peripheral_handle: PlatformPeripheralHandle,
-        property: PlatformPeripheralProperty,
+        peripheral_handle: PeripheralHandle,
+        property: BackendPeripheralProperty,
     },
     PeripheralConnected {
-        peripheral_handle: PlatformPeripheralHandle,
+        peripheral_handle: PeripheralHandle,
     },
     PeripheralDisconnected {
-        peripheral_handle: PlatformPeripheralHandle,
+        peripheral_handle: PeripheralHandle,
     },
+    PeripheralPrimaryGattService {
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+        uuid: Uuid,
+    },
+    PeripheralPrimaryGattServicesComplete {
+        peripheral_handle: PeripheralHandle,
+    },
+    ServiceIncludedGattService {
+        peripheral_handle: PeripheralHandle,
+        parent_service_handle: ServiceHandle,
+        included_service_handle: ServiceHandle,
+        uuid: Uuid,
+    },
+    ServiceIncludedGattServicesComplete {
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+    },
+    ServiceGattCharacteristic {
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle,
+        uuid: Uuid,
+    },
+    ServiceGattCharacteristicsComplete {
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+    },
+    ServiceGattCharacteristicNotify {
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle,
+        value: Vec<u8>,
+    },
+
+    Flush(u32)
 }
 
 #[non_exhaustive]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Event {
     #[non_exhaustive]
     PeripheralFound {
         peripheral: Peripheral,
         address: Address,
-        name: String
+        name: String,
     },
-    PeripheralConnected(Peripheral),
-    PeripheralDisconnected(Peripheral),
-    PeripheralPropertyChanged(Peripheral, PeripheralPropertyId),
-}
 
+    #[non_exhaustive]
+    PeripheralConnected { peripheral: Peripheral },
+
+    /// Indicates that a peripheral has disconnected.
+    ///
+    /// Once a peripheral has disconnected then all previously associated
+    /// `Service`s and `Characteristic`s become invalid and requests
+    /// against these objects will start to report `InvalidStateReference`
+    /// errors.
+    #[non_exhaustive]
+    PeripheralDisconnected { peripheral: Peripheral },
+    #[non_exhaustive]
+    PeripheralPropertyChanged {
+        peripheral: Peripheral,
+        property_id: PeripheralPropertyId,
+    },
+    #[non_exhaustive]
+    PeripheralPrimaryGattService {
+        peripheral: Peripheral,
+        service: Service,
+        uuid: Uuid, // just for convenience
+    },
+    #[non_exhaustive]
+    PeripheralPrimaryGattServicesComplete { peripheral: Peripheral },
+    #[non_exhaustive]
+    ServiceIncludedGattService {
+        peripheral: Peripheral,
+        parent_service: Service,
+        service: Service,
+        uuid: Uuid, // just for convenience
+    },
+    #[non_exhaustive]
+    ServiceIncludedGattServicesComplete {
+        peripheral: Peripheral,
+        service: Service,
+    },
+    #[non_exhaustive]
+    ServiceGattCharacteristic {
+        peripheral: Peripheral,
+        service: Service,
+        characteristic: Characteristic,
+        uuid: Uuid, // just for convenience
+    },
+    #[non_exhaustive]
+    ServiceGattCharacteristicsComplete {
+        peripheral: Peripheral,
+        service: Service,
+    },
+    #[non_exhaustive]
+    ServiceGattCharacteristicValueNotify {
+        peripheral: Peripheral,
+        service: Service,
+        characteristic: Characteristic,
+        value: Vec<u8>,
+    },
+
+    Flush(u32)
+}
+/*
 impl fmt::Debug for Event {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -215,25 +338,38 @@ impl fmt::Debug for Event {
                     .field(name)
                     .finish()
             },
-            Event::PeripheralConnected(peripheral) => {
+            Event::PeripheralConnected { peripheral } => {
                 f.debug_tuple("PeripheralConnected")
                     .field(&peripheral.address().to_string())
                     .finish()
             }
-            Event::PeripheralDisconnected(peripheral) => {
+            Event::PeripheralDisconnected { peripheral } => {
                 f.debug_tuple("PeripheralDisconnected")
                     .field(&peripheral.address().to_string())
                     .finish()
             }
-            Event::PeripheralPropertyChanged(peripheral, id) => {
+            Event::PeripheralPropertyChanged { peripheral, property_id } => {
                 f.debug_tuple("PeripheralPropertyChanged")
                     .field(&peripheral.address().to_string())
-                    .field(id)
+                    .field(property_id)
                     .finish()
-            }
+            },
+            Event::PeripheralPrimaryGattService {peripheral, service} => {
+                f.debug_tuple("PeripheralPrimaryGattService")
+                    .field(&peripheral.address().to_string())
+                    .field(&service.uuid().unwrap_or(Uuid::default()).to_string())
+                    .finish()
+            },
+            Event::ServiceIncludedGattService { peripheral, parent_service, service } => {
+                f.debug_tuple("ServiceIncludedGattService")
+                    .field(&peripheral.address().to_string())
+                    .field(&parent_service.uuid().unwrap_or(Uuid::default()).to_string())
+                    .field(&service.uuid().unwrap_or(Uuid::default()).to_string())
+                    .finish()
+            },
         }
     }
-}
+}*/
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -241,14 +377,16 @@ pub enum Error {
     PeripheralUnreachable,
 
     #[error("There was a GATT communication protocol error")]
-    PeripheralGattProtocolError,
+    PeripheralGattProtocolError(u8),
 
     #[error("Access Denied")]
     PeripheralAccessDenied,
+
+    #[error("Invalid State Reference")]
+    InvalidStateReference,
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
-

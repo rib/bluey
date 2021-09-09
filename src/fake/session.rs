@@ -1,5 +1,8 @@
-use crate::session::{PlatformSession, SessionConfig, Filter};
-use crate::{fake, winrt, Error, Result, PlatformEvent, PlatformPeripheralHandle};
+use crate::session::{Filter, BackendSession, SessionConfig};
+use crate::{
+    fake, winrt, CharacteristicHandle, Error, BackendEvent, PeripheralHandle, Result,
+    ServiceHandle,
+};
 use async_trait::async_trait;
 use futures::{stream, Stream, StreamExt};
 use std::borrow::Cow;
@@ -13,24 +16,90 @@ pub(crate) struct FakeSession {}
 impl FakeSession {
     pub async fn new(
         config: &SessionConfig,
-        platform_bus: mpsc::UnboundedSender<PlatformEvent>,
+        backend_bus: mpsc::UnboundedSender<BackendEvent>,
     ) -> Result<Self> {
         Ok(FakeSession {})
     }
 }
 
 #[async_trait]
-impl PlatformSession for FakeSession {
+impl BackendSession for FakeSession {
     async fn start_scanning(&self, filter: &Filter) -> Result<()> {
         todo!();
-        Ok(())
     }
     async fn stop_scanning(&self) -> Result<()> {
         todo!();
-        Ok(())
     }
-    async fn connect_peripheral(&self, peripheral_handle: PlatformPeripheralHandle) -> Result<()> {
+    async fn peripheral_connect(&self, peripheral_handle: PeripheralHandle) -> Result<()> {
         todo!();
-        Ok(())
+    }
+    async fn peripheral_discover_gatt_services(
+        &self,
+        peripheral_handle: PeripheralHandle,
+    ) -> Result<()> {
+        todo!()
+    }
+    async fn gatt_service_discover_includes(
+        &self,
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+    ) -> Result<()> {
+        todo!()
+    }
+    async fn gatt_service_discover_characteristics(
+        &self,
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    async fn gatt_characteristic_read(
+        &self,
+        peripheral_handle: PeripheralHandle,
+        characteristic_handle: CharacteristicHandle,
+        cache_mode: crate::CacheMode,
+    ) -> Result<Vec<u8>> {
+        todo!()
+    }
+
+    async fn gatt_characteristic_write(
+        &self,
+        peripheral_handle: PeripheralHandle,
+        characteristic_handle: CharacteristicHandle,
+        write_type: crate::characteristic::WriteType,
+        data: &[u8],
+    ) -> Result<()> {
+        todo!()
+    }
+
+    async fn gatt_characteristic_subscribe(
+        &self,
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    async fn gatt_characteristic_unsubscribe(
+        &self,
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle,
+    ) -> Result<()> {
+        todo!()
+    }
+
+    fn gatt_characteristic_uuid(&self, peripheral_handle: PeripheralHandle, characteristic_handle: CharacteristicHandle) -> Result<uuid::Uuid> {
+        todo!()
+    }
+
+    fn gatt_service_uuid(&self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle) -> Result<uuid::Uuid> {
+        todo!()
+    }
+
+    fn flush(&self, id: u32) -> Result<()> {
+        todo!()
     }
 }

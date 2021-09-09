@@ -17,7 +17,7 @@ async-trait = "0.1"
 futures = "0.3"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync"] }
 tokio-stream = { version = "0.1", features = ["sync"]}
-env_logger = "0.8"
+env_logger = "0.9"
 log = "0.4"
 thiserror = "1.0"
 anyhow = "1.0"
@@ -33,5 +33,6 @@ windows = "0.19.0"
 windows = "0.19.0"
 
 [dev-dependencies]
-pretty_env_logger = "0.4.0"
+# upstream pretty_env_logger is no longer maintained...
+pretty_env_logger = { git = "https://github.com/project-anni/pretty-env-logger.git" }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "signal"] }

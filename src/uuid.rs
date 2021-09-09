@@ -31,10 +31,20 @@ impl BluetoothUuid for Uuid {
     }
 
     fn from_u16(v: u16) -> Uuid {
-        Uuid::from_u128(BLUETOOTH_BASE_UUID | ((v as u128) << 96))
+        uuid_from_u16(v)
     }
 
     fn from_u32(v: u32) -> Uuid {
-        Uuid::from_u128(BLUETOOTH_BASE_UUID | ((v as u128) << 96))
+        uuid_from_u32(v)
     }
+}
+
+// It's useful to have const functions so apps can declare const Uuids but
+// unfortunately we can't have const functions in traits yet
+
+pub const fn uuid_from_u16(v: u16) -> Uuid {
+    Uuid::from_u128(BLUETOOTH_BASE_UUID | ((v as u128) << 96))
+}
+pub const fn uuid_from_u32(v: u32) -> Uuid {
+    Uuid::from_u128(BLUETOOTH_BASE_UUID | ((v as u128) << 96))
 }

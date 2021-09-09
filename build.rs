@@ -17,6 +17,8 @@ fn main() {
         Windows::Storage::Streams::{
             IBuffer,
             DataReader,
+            DataWriter,
         },
+        Windows::Win32::Foundation::*, // HRESULTS
     );
 }

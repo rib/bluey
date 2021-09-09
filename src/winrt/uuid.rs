@@ -32,7 +32,6 @@ impl WinrtUuid for Uuid {
 
     // Urgh, Guid doesn't expose its value publicly, except via the Debug trait!
     fn try_from_guid(guid: &Guid) -> Result<Uuid> {
-
         //let cguid: CGuid = unsafe { std::mem::transmute(guid) };
         //Ok(Uuid::from_fields(cguid.data1, cguid.data2, cguid.data3, &cguid.data4).map_err(|err|Error::Other(anyhow!(err)))?)
         /*
