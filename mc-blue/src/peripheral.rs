@@ -1,19 +1,19 @@
 use std::borrow::BorrowMut;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicIsize, Ordering};
+use std::collections::HashMap;
+
+use uuid::Uuid;
+use log::{info, trace, warn};
 use thiserror::Error;
+
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
-//use std::borrow::Cow;
+
 use crate::service::Service;
 use crate::session::Session;
-use crate::{fake, winrt, Address, Error, MacAddressType, PeripheralHandle, Result, MAC};
-use std::sync::atomic::{AtomicIsize, Ordering};
-//use crate::PeripheralPropertyId;
-use std::collections::HashMap;
-use uuid::Uuid;
-
-use log::{info, trace, warn};
+use crate::{fake, Address, Error, MacAddressType, PeripheralHandle, Result, MAC};
 
 // For the public API a Peripheral is just a thin wrapper over a
 // backend handle associated with a peripheral-specific API.

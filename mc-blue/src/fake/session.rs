@@ -1,15 +1,18 @@
-use crate::session::{Filter, BackendSession, SessionConfig};
-use crate::{
-    fake, winrt, CharacteristicHandle, Error, BackendEvent, PeripheralHandle, Result,
-    ServiceHandle,
-};
-use async_trait::async_trait;
-use futures::{stream, Stream, StreamExt};
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
+
+use async_trait::async_trait;
+use futures::{stream, Stream, StreamExt};
+
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
+
+use crate::session::{Filter, BackendSession, SessionConfig};
+use crate::{
+    fake, CharacteristicHandle, Error, BackendEvent, PeripheralHandle, Result,
+    ServiceHandle,
+};
 
 #[derive(Debug)]
 pub(crate) struct FakeSession {}

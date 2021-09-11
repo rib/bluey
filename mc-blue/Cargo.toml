@@ -1,0 +1,62 @@
+[package]
+name = "mc-blue"
+readme = "README.md"
+version = "0.1.0"
+keywords = ["bluetooth", "ble", "gatt"]
+categories = ["hardware-support"]
+license = "MIT"
+repository = "https://github.com/rib/mc-blue"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "bmb"
+
+[dependencies]
+async-trait = "0.1"
+futures = "0.3"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync"] }
+tokio-stream = { version = "0.1", features = ["sync"]}
+env_logger = "0.9"
+log = "0.4"
+thiserror = "1.0"
+anyhow = "1.0"
+uuid = { version = "0.8", features = ["v4"] }
+dashmap = "4"
+serde = { version = "1.0", features = ["derive"] }
+arrayvec = "0.7"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = "0.19.0"
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+windows = "0.19.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
+version = "0.3"
+features = [
+  "console",
+  "Event",
+  "Window",
+  "Navigator",
+  "Bluetooth",
+  "BluetoothLeScanFilterInit",
+  "RequestDeviceOptions",
+  "BluetoothDevice",
+  "BluetoothRemoteGattServer",
+  "BluetoothRemoteGattCharacteristic",
+  "BluetoothRemoteGattService",
+  "BluetoothCharacteristicProperties",
+]
+
+[dev-dependencies]
+# upstream pretty_env_logger is no longer maintained...
+pretty_env_logger = { git = "https://github.com/project-anni/pretty-env-logger.git" }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "signal"] }
+

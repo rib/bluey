@@ -2,16 +2,18 @@ use std::borrow::BorrowMut;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
-use thiserror::Error;
-use tokio::sync::{broadcast, mpsc};
-use tokio_stream::wrappers::BroadcastStream;
+
 use uuid::Uuid;
 use log::{trace};
+use thiserror::Error;
+
+use tokio::sync::{broadcast, mpsc};
+use tokio_stream::wrappers::BroadcastStream;
 
 use crate::peripheral::Peripheral;
 use crate::session::{Session, CharacteristicState};
 use crate::{
-    fake, winrt, Address, CacheMode, CharacteristicHandle, Error, MacAddressType, Result, Service,
+    fake, Address, CacheMode, CharacteristicHandle, Error, MacAddressType, Result, Service,
     MAC,
 };
 

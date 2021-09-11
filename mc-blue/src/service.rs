@@ -2,17 +2,18 @@ use std::borrow::BorrowMut;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
-use thiserror::Error;
-use tokio::sync::{broadcast, mpsc};
-use tokio_stream::wrappers::BroadcastStream;
+
 use uuid::Uuid;
 use log::{trace};
+use thiserror::Error;
+
+use tokio::sync::{broadcast, mpsc};
+use tokio_stream::wrappers::BroadcastStream;
 
 use crate::characteristic::Characteristic;
 use crate::peripheral::Peripheral;
 use crate::session::{Session, ServiceState};
-use crate::{fake, winrt, Address, Error, MacAddressType, Result, ServiceHandle, MAC};
-//use crate::ServicePropertyId;
+use crate::{fake, Address, Error, MacAddressType, Result, ServiceHandle, MAC};
 
 // For the public API a Service is just a thin wrapper over a
 // Peripheral and a backend service handle. NB: we don't use

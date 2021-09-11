@@ -17,12 +17,15 @@ use uuid::Uuid;
 use crate::characteristic::{Characteristic, WriteType};
 use crate::peripheral::{self, Peripheral};
 use crate::service::{self, Service};
-use crate::{fake, winrt, Address, AddressType, Error, BackendPeripheralProperty, Result, MAC};
+use crate::{fake, Address, AddressType, Error, BackendPeripheralProperty, Result, MAC};
 use crate::{
     CacheMode, CharacteristicHandle, MacAddressType, PeripheralPropertyId,
     PeripheralHandle, ServiceHandle,
 };
 use crate::{Event, BackendEvent};
+
+#[cfg(target_os = "windows")]
+use crate::winrt;
 
 use anyhow::anyhow;
 
@@ -137,6 +140,7 @@ enum BackendSessionImpl {
 impl BackendSessionImpl {
     fn api(&self) -> &dyn BackendSession {
         match self {
+            #[cfg(target_os = "windows")]
             BackendSessionImpl::Winrt(winrt) => winrt,
             BackendSessionImpl::Fake(fake) => fake,
         }
@@ -340,6 +344,12 @@ impl Session {
                 let implementation =
                     winrt::session::WinrtSession::new(&config, backend_bus_tx.clone()).await?;
                 BackendSessionImpl::Winrt(implementation)
+            }
+            #[cfg(target_arch = "wasm32")]
+            Backend::SystemDefault => {
+                let implementation =
+                    fake::session::FakeSession::new(&config, backend_bus_tx.clone()).await?;
+                BackendSessionImpl::Fake(implementation)
             }
             Backend::Fake => {
                 let implementation =
