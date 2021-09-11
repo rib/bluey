@@ -5,15 +5,18 @@ _The hardest part with any new project is the naming; so big thanks to the
 
 # ☠ WIP ☠
 
-_This is still an early work in progress. It supports scanning for devices on
-Windows and delivering advertising data, such as service IDs, service data,
-tx, rssi etc and connecting to a device. The next thing to support is access
-to service characteristics._
+_This is still a work in progress._ It currently supports:
+* Windows only so far
+* Scanning for devices and delivering advertising data, such as service IDs,
+service data, tx, rssi etc
+* Basic GATT state; exporting Services => Included Services => Characteristics (It doesn't expose descriptors yet).
+* Reading/Writing GATT characteristics and subscribing to notifications.
 
 # Overview
 
 McBlue is a cross-platform Bluetooth library, focused on Bluetooth Low Energy
-peripheral support via GATT services
+peripheral support via GAP advertising packets for scanning and connected
+GATT services.
 
 For now the library is focused on enabling Windows support and I'll most likely
 enable Android after that.
@@ -25,7 +28,8 @@ Is a library _really_ cross-platform when it only actually works on one
 platform?  Probably not, but at this stage I'm holding off from enabling other
 platforms, besides keeping aware of some of the different platform-specific
 quirks/limitations, so that it doesn't get in the way of first getting one
-platform (Windows) working well.
+platform (Windows) working well. I'm generally trying to keep familiar with
+Corebluetooth, Bluez, Android and Web Bluetooth APIs as I go.
 
 # API
 
@@ -39,6 +43,9 @@ a unified event stream that covers central scanning data as well as
 per-peripheral updates. In my experience so far I find this is much more
 convenient than having to juggle streams coming and going for different
 peripherals.
+
+When you only care about a single peripheral though the API can filter
+events for you.
 
 A simple app that starts scanning currently looks something like this:
 ```rust
