@@ -1,12 +1,12 @@
 use std::borrow::BorrowMut;
-use std::fmt;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicIsize, Ordering};
 use std::collections::HashMap;
+use std::fmt;
+use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::Arc;
 
-use uuid::Uuid;
 use log::{info, trace, warn};
 use thiserror::Error;
+use uuid::Uuid;
 
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
@@ -34,28 +34,25 @@ impl fmt::Debug for Peripheral {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let addr_string = match peripheral_state.inner.try_read() {
             Ok(inner) => {
-                let address = inner
-                    .address
-                    .as_ref()
-                    .unwrap_or(&Address::MAC(MAC(0)))
-                    .clone();
+                let address = inner.address
+                                   .as_ref()
+                                   .unwrap_or(&Address::MAC(MAC(0)))
+                                   .clone();
                 address.to_string()
             }
             Err(_) => "<locked>".to_string(),
         };
         f.debug_struct("Peripheral")
-            .field("address", &addr_string)
-            .field("handle", &self.peripheral_handle)
-            .finish()
+         .field("address", &addr_string)
+         .field("handle", &self.peripheral_handle)
+         .finish()
     }
 }
 
 impl Peripheral {
     pub(crate) fn wrap(session: Session, peripheral_handle: PeripheralHandle) -> Self {
-        Peripheral {
-            session,
-            peripheral_handle,
-        }
+        Peripheral { session,
+                     peripheral_handle }
     }
 
     pub async fn connect(&self) -> Result<()> {
@@ -71,11 +68,10 @@ impl Peripheral {
         let state_guard = peripheral_state.inner.read().unwrap();
         // NB: we wait until we have an address before a peripheral is advertised
         // to the application so we shouldn't ever report an address of 0 here...
-        state_guard
-            .address
-            .as_ref()
-            .unwrap_or(&Address::MAC(MAC(0)))
-            .clone()
+        state_guard.address
+                   .as_ref()
+                   .unwrap_or(&Address::MAC(MAC(0)))
+                   .clone()
     }
 
     pub fn address_type(&self) -> Option<MacAddressType> {
@@ -89,11 +85,10 @@ impl Peripheral {
         let state_guard = peripheral_state.inner.read().unwrap();
         // NB: we wait until we have a name before a peripheral is advertised
         // to the application so we shouldn't ever report 'Unknown' here...
-        state_guard
-            .name
-            .as_ref()
-            .unwrap_or(&format!("Unknown"))
-            .clone()
+        state_guard.name
+                   .as_ref()
+                   .unwrap_or(&format!("Unknown"))
+                   .clone()
     }
 
     pub fn tx_power(&self) -> Option<i16> {
@@ -145,11 +140,10 @@ impl Peripheral {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
 
-        state_guard
-            .primary_gatt_services
-            .iter()
-            .map(|handle| Service::wrap(self.clone(), *handle))
-            .collect()
+        state_guard.primary_gatt_services
+                   .iter()
+                   .map(|handle| Service::wrap(self.clone(), *handle))
+                   .collect()
     }
 
     pub fn service_data(&self, id: Uuid) -> Option<Vec<u8>> {
@@ -165,13 +159,10 @@ impl Peripheral {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
         if !state_guard.service_data.is_empty() {
-            Some(
-                state_guard
-                    .service_data
-                    .iter()
-                    .map(|(uuid, data)| (*uuid, data.to_owned()))
-                    .collect(),
-            )
+            Some(state_guard.service_data
+                            .iter()
+                            .map(|(uuid, data)| (*uuid, data.to_owned()))
+                            .collect())
         } else {
             None
         }
@@ -190,13 +181,10 @@ impl Peripheral {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
         if !state_guard.manufacturer_data.is_empty() {
-            Some(
-                state_guard
-                    .manufacturer_data
-                    .iter()
-                    .map(|(id, data)| (*id, data.to_owned()))
-                    .collect(),
-            )
+            Some(state_guard.manufacturer_data
+                            .iter()
+                            .map(|(id, data)| (*id, data.to_owned()))
+                            .collect())
         } else {
             None
         }

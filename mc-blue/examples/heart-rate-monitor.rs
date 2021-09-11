@@ -51,11 +51,10 @@ fn create_poll_stream() -> Pin<Box<dyn Stream<Item = Event> + Send>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Warn) // Default Log Level
-        .parse_default_env()
-        .format(pretty_env_logger::formatter)
-        .init();
+    env_logger::builder().filter_level(log::LevelFilter::Warn) // Default Log Level
+                         .parse_default_env()
+                         .format(pretty_env_logger::formatter)
+                         .init();
 
     let session = session::SessionConfig::new().start().await?;
     let events = session.events()?;
@@ -67,9 +66,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ctrl_c_stream: Pin<Box<dyn Stream<Item = Event>>> =
         Box::pin(signal::ctrl_c().into_stream().map(|_| {
-            println!("Ctrl-C");
-            Event::Interrupt
-        }));
+                                                   println!("Ctrl-C");
+                                                   Event::Interrupt
+                                               }));
     mainloop.insert(EventSource::Interrupt, ctrl_c_stream);
 
     let bt_event_stream: Pin<Box<dyn Stream<Item = Event>>> =
@@ -86,20 +85,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match event {
             Event::BtEvent(event) => match event {
                 bmb::Event::PeripheralFound { peripheral, .. } => {
-                    println!(
-                        "Discovered peripheral: {} / {}",
-                        peripheral.name(),
-                        peripheral.address()
-                    );
+                    println!("Discovered peripheral: {} / {}",
+                             peripheral.name(),
+                             peripheral.address());
                 }
-                bmb::Event::PeripheralPropertyChanged {
-                    peripheral,
-                    property_id,
-                    ..
-                } => {
+                bmb::Event::PeripheralPropertyChanged { peripheral,
+                                                        property_id,
+                                                        .. } => {
                     if property_id == PeripheralPropertyId::ServiceIds {
                         println!("Got notified of new service IDs: {:?}",
-                            peripheral.service_ids());
+                                 peripheral.service_ids());
                     }
                     if hr_monitor.is_none() && property_id == bmb::PeripheralPropertyId::ServiceIds
                     {
@@ -157,7 +152,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Event::Update => {
                     match state {
                         HrmState::Connecting => {
-                            println!("Connecting to heart rate monitor {} ...", hr_monitor.address());
+                            println!("Connecting to heart rate monitor {} ...",
+                                     hr_monitor.address());
                             match hr_monitor.connect().await {
                                 Ok(()) => {
                                     println!("Connected to heart rate monitor");
@@ -214,11 +210,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let _ = wake_tx.send(Event::Update); // Don't wait 1 second for the next update
                             }
                         }
-                        bmb::Event::ServiceGattCharacteristic {
-                            characteristic,
-                            uuid,
-                            ..
-                        } => {
+                        bmb::Event::ServiceGattCharacteristic { characteristic,
+                                                                uuid,
+                                                                .. } => {
                             if uuid == HEART_RATE_MEASUREMENT_CHARACTERISTIC_UUID {
                                 println!("Discovered Heart Rate Measurement characteristic");
                                 hr_characteristic = Some(characteristic);
@@ -236,11 +230,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 mainloop.insert(EventSource::Poll, create_poll_stream());
                             }
                         }
-                        bmb::Event::ServiceGattCharacteristicValueNotify {
-                            characteristic,
-                            value,
-                            ..
-                        } => {
+                        bmb::Event::ServiceGattCharacteristicValueNotify { characteristic,
+                                                                           value,
+                                                                           .. } => {
                             match &hr_characteristic {
                                 Some(hr_characteristic) if hr_characteristic == &characteristic => {
                                     let data = value;

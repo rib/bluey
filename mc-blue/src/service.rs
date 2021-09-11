@@ -3,16 +3,16 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
 
-use uuid::Uuid;
-use log::{trace};
+use log::trace;
 use thiserror::Error;
+use uuid::Uuid;
 
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::characteristic::Characteristic;
 use crate::peripheral::Peripheral;
-use crate::session::{Session, ServiceState};
+use crate::session::{ServiceState, Session};
 use crate::{fake, Address, Error, MacAddressType, Result, ServiceHandle, MAC};
 
 // For the public API a Service is just a thin wrapper over a
@@ -33,10 +33,8 @@ pub struct Service {
 
 impl Service {
     pub(crate) fn wrap(peripheral: Peripheral, service_handle: ServiceHandle) -> Self {
-        Service {
-            peripheral,
-            service_handle,
-        }
+        Service { peripheral,
+                  service_handle }
     }
 
     fn get_service_state(&self) -> Result<ServiceState> {
@@ -62,10 +60,10 @@ impl Service {
     pub async fn discover_included_services(&self) -> Result<()> {
         trace!("discover_included_services()");
         let session = &self.peripheral.session;
-        session
-            .backend_api()
-            .gatt_service_discover_includes(self.peripheral.peripheral_handle, self.service_handle)
-            .await?;
+        session.backend_api()
+               .gatt_service_discover_includes(self.peripheral.peripheral_handle,
+                                               self.service_handle)
+               .await?;
         Ok(())
     }
 
@@ -73,23 +71,19 @@ impl Service {
         let service_state = self.get_service_state()?;
         let service_state_guard = service_state.inner.read().unwrap();
 
-        Ok(service_state_guard
-            .included_services
-            .iter()
-            .map(|handle| Service::wrap(self.peripheral.clone(), *handle))
-            .collect())
+        Ok(service_state_guard.included_services
+                              .iter()
+                              .map(|handle| Service::wrap(self.peripheral.clone(), *handle))
+                              .collect())
     }
 
     pub async fn discover_characteristics(&self) -> Result<()> {
         trace!("discover_characteristics()");
         let session = &self.peripheral.session;
-        session
-            .backend_api()
-            .gatt_service_discover_characteristics(
-                self.peripheral.peripheral_handle,
-                self.service_handle,
-            )
-            .await?;
+        session.backend_api()
+               .gatt_service_discover_characteristics(self.peripheral.peripheral_handle,
+                                                      self.service_handle)
+               .await?;
         Ok(())
     }
 
@@ -98,10 +92,9 @@ impl Service {
 
         let service_state_guard = service_state.inner.read().unwrap();
 
-        Ok(service_state_guard
-            .characteristics
-            .iter()
-            .map(|handle| Characteristic::wrap(self.clone(), *handle))
-            .collect())
+        Ok(service_state_guard.characteristics
+                              .iter()
+                              .map(|handle| Characteristic::wrap(self.clone(), *handle))
+                              .collect())
     }
 }

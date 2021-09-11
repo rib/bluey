@@ -39,11 +39,9 @@ pub struct MAC(u64);
 impl fmt::Display for MAC {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let bytes = u64::to_le_bytes(self.0);
-        write!(
-            f,
-            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
-        )
+        write!(f,
+               "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+               bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5])
     }
 }
 
@@ -257,7 +255,7 @@ pub(crate) enum BackendEvent {
         value: Vec<u8>,
     },
 
-    Flush(u32)
+    Flush(u32),
 }
 
 #[non_exhaustive]
@@ -271,7 +269,9 @@ pub enum Event {
     },
 
     #[non_exhaustive]
-    PeripheralConnected { peripheral: Peripheral },
+    PeripheralConnected {
+        peripheral: Peripheral,
+    },
 
     /// Indicates that a peripheral has disconnected.
     ///
@@ -280,7 +280,9 @@ pub enum Event {
     /// against these objects will start to report `InvalidStateReference`
     /// errors.
     #[non_exhaustive]
-    PeripheralDisconnected { peripheral: Peripheral },
+    PeripheralDisconnected {
+        peripheral: Peripheral,
+    },
     #[non_exhaustive]
     PeripheralPropertyChanged {
         peripheral: Peripheral,
@@ -293,7 +295,9 @@ pub enum Event {
         uuid: Uuid, // just for convenience
     },
     #[non_exhaustive]
-    PeripheralPrimaryGattServicesComplete { peripheral: Peripheral },
+    PeripheralPrimaryGattServicesComplete {
+        peripheral: Peripheral,
+    },
     #[non_exhaustive]
     ServiceIncludedGattService {
         peripheral: Peripheral,
@@ -326,7 +330,7 @@ pub enum Event {
         value: Vec<u8>,
     },
 
-    Flush(u32)
+    Flush(u32),
 }
 /*
 impl fmt::Debug for Event {

@@ -3,18 +3,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
 
-use uuid::Uuid;
-use log::{trace};
+use log::trace;
 use thiserror::Error;
+use uuid::Uuid;
 
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::peripheral::Peripheral;
-use crate::session::{Session, CharacteristicState};
+use crate::session::{CharacteristicState, Session};
 use crate::{
-    fake, Address, CacheMode, CharacteristicHandle, Error, MacAddressType, Result, Service,
-    MAC,
+    fake, Address, CacheMode, CharacteristicHandle, Error, MacAddressType, Result, Service, MAC,
 };
 
 // For the public API a Characteristic is just a thin wrapper over a
@@ -37,10 +36,8 @@ pub struct Characteristic {
 
 impl Characteristic {
     pub(crate) fn wrap(service: Service, characteristic_handle: CharacteristicHandle) -> Self {
-        Self {
-            service,
-            characteristic_handle,
-        }
+        Self { service,
+               characteristic_handle }
     }
 
     fn get_characteristic_state(&self) -> Result<CharacteristicState> {
@@ -50,8 +47,9 @@ impl Characteristic {
 
         let peripheral_state_guard = peripheral_state.inner.read().unwrap();
 
-        let (characteristic_state, _) = session
-            .get_gatt_characteristic_state(&peripheral_state_guard, self.characteristic_handle)?;
+        let (characteristic_state, _) =
+            session.get_gatt_characteristic_state(&peripheral_state_guard,
+                                                  self.characteristic_handle)?;
 
         Ok(characteristic_state)
     }
@@ -65,25 +63,21 @@ impl Characteristic {
         let session = &self.service.peripheral.session;
         let peripheral_handle = self.service.peripheral.peripheral_handle;
 
-        session
-            .backend_api()
-            .gatt_characteristic_read(peripheral_handle, self.characteristic_handle, cache_mode)
-            .await
+        session.backend_api()
+               .gatt_characteristic_read(peripheral_handle, self.characteristic_handle, cache_mode)
+               .await
     }
 
     pub async fn write_value(&self, write_type: WriteType, data: &[u8]) -> Result<()> {
         let session = &self.service.peripheral.session;
         let peripheral_handle = self.service.peripheral.peripheral_handle;
 
-        session
-            .backend_api()
-            .gatt_characteristic_write(
-                peripheral_handle,
-                self.characteristic_handle,
-                write_type,
-                data,
-            )
-            .await
+        session.backend_api()
+               .gatt_characteristic_write(peripheral_handle,
+                                          self.characteristic_handle,
+                                          write_type,
+                                          data)
+               .await
     }
 
     pub async fn subscribe(&self) -> Result<()> {
@@ -92,14 +86,11 @@ impl Characteristic {
         let service_handle = self.service.service_handle;
 
         trace!("subscribe()");
-        session
-            .backend_api()
-            .gatt_characteristic_subscribe(
-                peripheral_handle,
-                service_handle,
-                self.characteristic_handle,
-            )
-            .await
+        session.backend_api()
+               .gatt_characteristic_subscribe(peripheral_handle,
+                                              service_handle,
+                                              self.characteristic_handle)
+               .await
     }
 
     pub async fn unsubscribe(&self) -> Result<()> {
@@ -108,14 +99,11 @@ impl Characteristic {
         let service_handle = self.service.service_handle;
 
         trace!("unsubscribe()");
-        session
-            .backend_api()
-            .gatt_characteristic_unsubscribe(
-                peripheral_handle,
-                service_handle,
-                self.characteristic_handle,
-            )
-            .await
+        session.backend_api()
+               .gatt_characteristic_unsubscribe(peripheral_handle,
+                                                service_handle,
+                                                self.characteristic_handle)
+               .await
     }
 }
 

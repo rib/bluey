@@ -4,11 +4,11 @@ use futures::{stream, Stream, StreamExt};
 use log::{info, trace, warn};
 use std::borrow::BorrowMut;
 use std::collections::{HashMap, HashSet};
-use std::{char, default};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::RwLock as StdRwLock;
 use std::sync::{Arc, Weak};
+use std::{char, default};
 use tokio::sync::Mutex;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
@@ -17,12 +17,12 @@ use uuid::Uuid;
 use crate::characteristic::{Characteristic, WriteType};
 use crate::peripheral::{self, Peripheral};
 use crate::service::{self, Service};
-use crate::{fake, Address, AddressType, Error, BackendPeripheralProperty, Result, MAC};
+use crate::{fake, Address, AddressType, BackendPeripheralProperty, Error, Result, MAC};
+use crate::{BackendEvent, Event};
 use crate::{
-    CacheMode, CharacteristicHandle, MacAddressType, PeripheralPropertyId,
-    PeripheralHandle, ServiceHandle,
+    CacheMode, CharacteristicHandle, MacAddressType, PeripheralHandle, PeripheralPropertyId,
+    ServiceHandle,
 };
-use crate::{Event, BackendEvent};
 
 #[cfg(target_os = "windows")]
 use crate::winrt;
@@ -74,59 +74,47 @@ pub(crate) trait BackendSession {
 
     async fn peripheral_connect(&self, peripheral_handle: PeripheralHandle) -> Result<()>;
 
-    async fn peripheral_discover_gatt_services(
-        &self,
-        peripheral_handle: PeripheralHandle,
-    ) -> Result<()>;
+    async fn peripheral_discover_gatt_services(&self, peripheral_handle: PeripheralHandle)
+                                               -> Result<()>;
 
-    async fn gatt_service_discover_includes(
-        &self,
-        peripheral_handle: PeripheralHandle,
-        service_handle: ServiceHandle,
-    ) -> Result<()>;
-    async fn gatt_service_discover_characteristics(
-        &self,
-        peripheral_handle: PeripheralHandle,
-        service_handle: ServiceHandle,
-    ) -> Result<()>;
+    async fn gatt_service_discover_includes(&self, peripheral_handle: PeripheralHandle,
+                                            service_handle: ServiceHandle)
+                                            -> Result<()>;
+    async fn gatt_service_discover_characteristics(&self, peripheral_handle: PeripheralHandle,
+                                                   service_handle: ServiceHandle)
+                                                   -> Result<()>;
 
-    async fn gatt_characteristic_read(
-        &self,
-        peripheral_handle: PeripheralHandle,
-        characteristic_handle: CharacteristicHandle,
-        cache_mode: CacheMode,
-    ) -> Result<Vec<u8>>;
-    async fn gatt_characteristic_write(
-        &self,
-        peripheral_handle: PeripheralHandle,
-        characteristic_handle: CharacteristicHandle,
-        write_type: WriteType,
-        data: &[u8],
-    ) -> Result<()>;
+    async fn gatt_characteristic_read(&self, peripheral_handle: PeripheralHandle,
+                                      characteristic_handle: CharacteristicHandle,
+                                      cache_mode: CacheMode)
+                                      -> Result<Vec<u8>>;
+    async fn gatt_characteristic_write(&self, peripheral_handle: PeripheralHandle,
+                                       characteristic_handle: CharacteristicHandle,
+                                       write_type: WriteType, data: &[u8])
+                                       -> Result<()>;
 
     // We explicitly pass the backend the service_handle here because we want
     // characteristic value notifications sent from the backend to include
     // the service but the backend isn't otherwise expected to have to track
     // relationships between handles
-    async fn gatt_characteristic_subscribe(
-        &self,
-        peripheral_handle: PeripheralHandle,
-        service_handle: ServiceHandle,
-        characteristic_handle: CharacteristicHandle,
-    ) -> Result<()>;
-    async fn gatt_characteristic_unsubscribe(
-        &self,
-        peripheral_handle: PeripheralHandle,
-        service_handle: ServiceHandle,
-        characteristic_handle: CharacteristicHandle,
-    ) -> Result<()>;
+    async fn gatt_characteristic_subscribe(&self, peripheral_handle: PeripheralHandle,
+                                           service_handle: ServiceHandle,
+                                           characteristic_handle: CharacteristicHandle)
+                                           -> Result<()>;
+    async fn gatt_characteristic_unsubscribe(&self, peripheral_handle: PeripheralHandle,
+                                             service_handle: ServiceHandle,
+                                             characteristic_handle: CharacteristicHandle)
+                                             -> Result<()>;
 
     // To make it possible for the frontend cache to be cleared then we need to
     // be able to cope with receiving service or characteristic handles with
     // no context. When recreating state objects we at least need to know the
     // uuids...
-    fn gatt_service_uuid(&self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle) -> Result<Uuid>;
-    fn gatt_characteristic_uuid(&self, peripheral_handle: PeripheralHandle, characteristic_handle: CharacteristicHandle) -> Result<Uuid>;
+    fn gatt_service_uuid(&self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle)
+                         -> Result<Uuid>;
+    fn gatt_characteristic_uuid(&self, peripheral_handle: PeripheralHandle,
+                                characteristic_handle: CharacteristicHandle)
+                                -> Result<Uuid>;
 
     fn flush(&self, id: u32) -> Result<()>;
 }
@@ -219,15 +207,13 @@ pub(crate) struct ServiceState {
 }
 impl ServiceState {
     fn new(uuid: Uuid) -> Self {
-        Self {
-            inner: Arc::new(StdRwLock::new(ServiceStateInner {
-                uuid,
-                included_services: vec![],
-                included_services_complete: false,
-                characteristics: vec![],
-                characteristics_complete: false,
-            })),
-        }
+        Self { inner:
+                   Arc::new(StdRwLock::new(ServiceStateInner { uuid,
+                                                               included_services: vec![],
+                                                               included_services_complete:
+                                                                   false,
+                                                               characteristics: vec![],
+                                                               characteristics_complete: false })) }
     }
 }
 
@@ -301,9 +287,7 @@ pub struct SessionConfig {
 
 impl SessionConfig {
     pub fn new() -> SessionConfig {
-        SessionConfig {
-            backend: Backend::SystemDefault,
-        }
+        SessionConfig { backend: Backend::SystemDefault }
     }
 
     pub fn set_backend(&mut self, backend: Backend) -> &mut Self {
@@ -357,17 +341,14 @@ impl Session {
                 BackendSessionImpl::Fake(implementation)
             }
         };
-        let session = Session {
-            inner: Arc::new(SessionInner {
-                event_bus: broadcast_sender,
-                next_flush_index: AtomicU32::new(0),
-                //backend_bus: backend_bus_rx,
-                backend,
-                is_scanning: Mutex::new(false),
-                //scan_subscriptions: AtomicU32::new(0),
-                peripherals: DashMap::new(),
-            }),
-        };
+        let session =
+            Session { inner: Arc::new(SessionInner { event_bus: broadcast_sender,
+                                                     next_flush_index: AtomicU32::new(0),
+                                                     //backend_bus: backend_bus_rx,
+                                                     backend,
+                                                     is_scanning: Mutex::new(false),
+                                                     //scan_subscriptions: AtomicU32::new(0),
+                                                     peripherals: DashMap::new() }) };
 
         // XXX: This task (which will be responsible for processing all backend
         // events) is only given a Weak reference to the session, otherwise
@@ -382,10 +363,8 @@ impl Session {
         Ok(session)
     }
 
-    pub(crate) fn ensure_peripheral_state(
-        &self,
-        peripheral_handle: PeripheralHandle,
-    ) -> PeripheralState {
+    pub(crate) fn ensure_peripheral_state(&self, peripheral_handle: PeripheralHandle)
+                                          -> PeripheralState {
         match self.inner.peripherals.get(&peripheral_handle) {
             Some(peripheral_state) => peripheral_state.clone(),
             None => {
@@ -398,17 +377,13 @@ impl Session {
         }
     }
 
-    pub(crate) fn get_peripheral_state(
-        &self,
-        peripheral_handle: PeripheralHandle,
-    ) -> PeripheralState {
+    pub(crate) fn get_peripheral_state(&self, peripheral_handle: PeripheralHandle)
+                                       -> PeripheralState {
         match self.inner.peripherals.get(&peripheral_handle) {
             Some(peripheral_state) => peripheral_state.clone(),
             None => {
-                log::error!(
-                    "Spurious notification of a new peripheral {:?}",
-                    peripheral_handle
-                );
+                log::error!("Spurious notification of a new peripheral {:?}",
+                            peripheral_handle);
 
                 // Handle this gracefully by just creating peripheral state on the fly (this would imply
                 // a backend bug, not an application bug and it's not obvious what the best way of handling
@@ -438,42 +413,40 @@ impl Session {
     }
     */
 
-    pub(crate) fn get_gatt_service_state(
-        &self,
-        peripheral_state: &PeripheralStateInner,
-        service_handle: ServiceHandle,
-    ) -> Result<(ServiceState, bool)> {
+    pub(crate) fn get_gatt_service_state(&self, peripheral_state: &PeripheralStateInner,
+                                         service_handle: ServiceHandle)
+                                         -> Result<(ServiceState, bool)> {
         match peripheral_state.gatt_services.get(&service_handle) {
             Some(service_state) => Ok((service_state.clone(), false)),
             None => {
                 log::trace!("Creating state for unknown Service {:?}", service_handle);
-                let uuid = self.backend_api().gatt_service_uuid(peripheral_state.peripheral_handle, service_handle)?;
+                let uuid =
+                    self.backend_api()
+                        .gatt_service_uuid(peripheral_state.peripheral_handle, service_handle)?;
                 let service_state = ServiceState::new(uuid);
-                peripheral_state
-                    .gatt_services
-                    .insert(service_handle, service_state.clone());
+                peripheral_state.gatt_services
+                                .insert(service_handle, service_state.clone());
                 Ok((service_state, true))
             }
         }
     }
 
-    pub(crate) fn get_gatt_characteristic_state(
-        &self,
-        peripheral_state: &PeripheralStateInner,
-        characteristic_handle: CharacteristicHandle,
-    ) -> Result<(CharacteristicState, bool)> {
-        match peripheral_state
-            .gatt_characteristics
-            .get(&characteristic_handle)
+    pub(crate) fn get_gatt_characteristic_state(&self, peripheral_state: &PeripheralStateInner,
+                                                characteristic_handle: CharacteristicHandle)
+                                                -> Result<(CharacteristicState, bool)> {
+        match peripheral_state.gatt_characteristics
+                              .get(&characteristic_handle)
         {
             Some(characteristic_state) => Ok((characteristic_state.clone(), false)),
             None => {
-                log::trace!("Creating state for unknown Characteristic {:?}", characteristic_handle);
-                let uuid = self.backend_api().gatt_characteristic_uuid(peripheral_state.peripheral_handle, characteristic_handle)?;
+                log::trace!("Creating state for unknown Characteristic {:?}",
+                            characteristic_handle);
+                let uuid = self.backend_api()
+                               .gatt_characteristic_uuid(peripheral_state.peripheral_handle,
+                                                         characteristic_handle)?;
                 let characteristic_state = CharacteristicState::new(uuid);
-                peripheral_state
-                    .gatt_characteristics
-                    .insert(characteristic_handle, characteristic_state.clone());
+                peripheral_state.gatt_characteristics
+                                .insert(characteristic_handle, characteristic_state.clone());
                 Ok((characteristic_state, true))
             }
         }
@@ -485,17 +458,21 @@ impl Session {
 
         if state_guard.is_connected != true {
             trace!("PeripheralConnected: handle={}/{}",
-                    peripheral_handle.0,
-                    state_guard.address.as_ref().unwrap_or(&Address::MAC(MAC(0))).to_string());
+                   peripheral_handle.0,
+                   state_guard.address
+                              .as_ref()
+                              .unwrap_or(&Address::MAC(MAC(0)))
+                              .to_string());
             state_guard.is_connected = true;
 
-            trace!(
-                "Notifying peripheral {} connected",
-                state_guard.address.as_ref().unwrap().to_string()
-            );
-            let _ = self.inner.event_bus.send(Event::PeripheralConnected {
-                peripheral: Peripheral::wrap(self.clone(), peripheral_handle),
-            });
+            trace!("Notifying peripheral {} connected",
+                   state_guard.address.as_ref().unwrap().to_string());
+            let _ =
+                self.inner
+                    .event_bus
+                    .send(Event::PeripheralConnected { peripheral:
+                                                           Peripheral::wrap(self.clone(),
+                                                                            peripheral_handle) });
         } else {
             warn!("Spurious, unbalanced/redundant PeripheralConnected notification from backend");
         }
@@ -508,8 +485,11 @@ impl Session {
         let mut state_guard = peripheral_state.inner.write().unwrap();
 
         trace!("PeripheralDisconnected: handle={}/{}",
-                peripheral_handle.0,
-                state_guard.address.as_ref().unwrap_or(&Address::MAC(MAC(0))).to_string());
+               peripheral_handle.0,
+               state_guard.address
+                          .as_ref()
+                          .unwrap_or(&Address::MAC(MAC(0)))
+                          .to_string());
 
         trace!("Invalidating GATT state");
         state_guard.gatt_services.clear();
@@ -524,7 +504,7 @@ impl Session {
             state_guard.is_connected = false;
 
             trace!("Notifying peripheral {} disconnected",
-                state_guard.address.as_ref().unwrap().to_string());
+                   state_guard.address.as_ref().unwrap().to_string());
             let _ = self.inner.event_bus.send(Event::PeripheralDisconnected {
                 peripheral: Peripheral::wrap(self.clone(), peripheral_handle),
             });
@@ -535,7 +515,9 @@ impl Session {
         Ok(())
     }
 
-    fn on_peripheral_property_set(&self, peripheral_handle: PeripheralHandle, property: BackendPeripheralProperty) -> Result<()> {
+    fn on_peripheral_property_set(&self, peripheral_handle: PeripheralHandle,
+                                  property: BackendPeripheralProperty)
+                                  -> Result<()> {
         let peripheral_state = self.get_peripheral_state(peripheral_handle);
 
         //
@@ -548,9 +530,12 @@ impl Session {
         //let mut changed_connection_state = false;
 
         trace!("PeripheralPropertySet: handle={}/{}: {:?}",
-                peripheral_handle.0,
-                state_guard.address.as_ref().unwrap_or(&Address::MAC(MAC(0))).to_string(),
-                property);
+               peripheral_handle.0,
+               state_guard.address
+                          .as_ref()
+                          .unwrap_or(&Address::MAC(MAC(0)))
+                          .to_string(),
+               property);
 
         match property {
             BackendPeripheralProperty::Address(address) => {
@@ -593,9 +578,7 @@ impl Session {
                 }
             }
             BackendPeripheralProperty::TxPower(tx_power) => {
-                if state_guard.tx_power.is_none()
-                    || state_guard.tx_power.unwrap() != tx_power
-                {
+                if state_guard.tx_power.is_none() || state_guard.tx_power.unwrap() != tx_power {
                     state_guard.tx_power = Some(tx_power);
                     changed_prop = Some(PeripheralPropertyId::TxPower);
                 }
@@ -638,12 +621,24 @@ impl Session {
 
         // We wait until we have and address and a name before advertising peripherals
         // to applications...
-        if state_guard.advertised == false && state_guard.name != None && state_guard.address != None {
-            let _ = self.inner.event_bus.send(Event::PeripheralFound {
-                peripheral: Peripheral::wrap(self.clone(), peripheral_handle),
-                address: state_guard.address.as_ref().unwrap().to_owned(),
-                name: state_guard.name.as_ref().unwrap().clone()
-            });
+        if state_guard.advertised == false
+           && state_guard.name != None
+           && state_guard.address != None
+        {
+            let _ =
+                self.inner
+                    .event_bus
+                    .send(Event::PeripheralFound { peripheral:
+                                                       Peripheral::wrap(self.clone(),
+                                                                        peripheral_handle),
+                                                   address: state_guard.address
+                                                                       .as_ref()
+                                                                       .unwrap()
+                                                                       .to_owned(),
+                                                   name: state_guard.name
+                                                                    .as_ref()
+                                                                    .unwrap()
+                                                                    .clone() });
             state_guard.advertised = true;
 
             // Also notify the app about any other properties we we're already tracking for the peripheral...
@@ -712,7 +707,9 @@ impl Session {
         Ok(())
     }
 
-    fn on_primary_gatt_service_notification(&self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle, uuid: Uuid) -> Result<()> {
+    fn on_primary_gatt_service_notification(&self, peripheral_handle: PeripheralHandle,
+                                            service_handle: ServiceHandle, uuid: Uuid)
+                                            -> Result<()> {
         let peripheral_state = self.get_peripheral_state(peripheral_handle);
 
         //
@@ -721,16 +718,16 @@ impl Session {
         let mut state_guard = peripheral_state.inner.write().unwrap();
 
         if let Ok((service_state, is_gatt_service_new)) =
-            self.get_gatt_service_state(state_guard.borrow_mut(), service_handle) {
-
+            self.get_gatt_service_state(state_guard.borrow_mut(), service_handle)
+        {
             if is_gatt_service_new {
                 let peripheral = Peripheral::wrap(self.clone(), peripheral_handle);
                 let service = Service::wrap(peripheral.clone(), service_handle);
-                let _ = self.inner.event_bus.send(Event::PeripheralPrimaryGattService {
-                    peripheral,
-                    service,
-                    uuid
-                });
+                let _ = self.inner
+                            .event_bus
+                            .send(Event::PeripheralPrimaryGattService { peripheral,
+                                                                        service,
+                                                                        uuid });
             }
 
             // Also register the service uuid
@@ -741,10 +738,8 @@ impl Session {
                 new_service_id = true;
             }
             if new_service_id {
-                trace!(
-                    "Notifying property {:?} changed",
-                    PeripheralPropertyId::ServiceIds
-                );
+                trace!("Notifying property {:?} changed",
+                       PeripheralPropertyId::ServiceIds);
                 let _ = self
                     .inner
                     .event_bus
@@ -772,22 +767,16 @@ impl Session {
         Ok(())
     }
 
-    fn on_included_gatt_service_notification(
-        &self,
-        peripheral_handle: PeripheralHandle,
-        parent_service_handle: ServiceHandle,
-        included_service_handle: ServiceHandle,
-        uuid: Uuid) -> Result<()>
-    {
+    fn on_included_gatt_service_notification(&self, peripheral_handle: PeripheralHandle,
+                                             parent_service_handle: ServiceHandle,
+                                             included_service_handle: ServiceHandle, uuid: Uuid)
+                                             -> Result<()> {
         let peripheral_state = self.get_peripheral_state(peripheral_handle);
         let mut peripheral_state_guard = peripheral_state.inner.write().unwrap();
 
-        match self
-            .get_gatt_service_state(&peripheral_state_guard, parent_service_handle)
-        {
+        match self.get_gatt_service_state(&peripheral_state_guard, parent_service_handle) {
             Ok((parent_service_state, _)) => {
-                let mut parent_service_state_guard =
-                    parent_service_state.inner.write().unwrap();
+                let mut parent_service_state_guard = parent_service_state.inner.write().unwrap();
 
                 // XXX: we don't consider whether this is the first time we've seen this
                 // service when deciding whether to notify the app, rather we check to see
@@ -800,18 +789,21 @@ impl Session {
                 // For now we just try and preserve the order of events from the backend
                 //
                 // XXX: we expect fairly tiny arrays so the contains checks should be fine
-                if !parent_service_state_guard.included_services.contains(&included_service_handle) {
-                    parent_service_state_guard.included_services.push(included_service_handle);
+                if !parent_service_state_guard.included_services
+                                              .contains(&included_service_handle)
+                {
+                    parent_service_state_guard.included_services
+                                              .push(included_service_handle);
 
                     let peripheral = Peripheral::wrap(self.clone(), peripheral_handle);
                     let parent_service = Service::wrap(peripheral.clone(), parent_service_handle);
                     let service = Service::wrap(peripheral.clone(), included_service_handle);
-                    let _ = self.inner.event_bus.send(Event::ServiceIncludedGattService {
-                        peripheral,
-                        parent_service,
-                        service,
-                        uuid
-                    });
+                    let _ = self.inner
+                                .event_bus
+                                .send(Event::ServiceIncludedGattService { peripheral,
+                                                                          parent_service,
+                                                                          service,
+                                                                          uuid });
                 }
 
                 // Also register the service uuid
@@ -822,7 +814,8 @@ impl Session {
                     new_service_id = true;
                 }
                 if new_service_id {
-                    trace!("Notifying property {:?} changed", PeripheralPropertyId::ServiceIds);
+                    trace!("Notifying property {:?} changed",
+                           PeripheralPropertyId::ServiceIds);
                     let _ = self.inner.event_bus.send(Event::PeripheralPropertyChanged {
                         peripheral: Peripheral::wrap(self.clone(), peripheral_handle),
                         property_id: PeripheralPropertyId::ServiceIds,
@@ -836,7 +829,9 @@ impl Session {
         Ok(())
     }
 
-    fn on_included_gatt_services_complete(&self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle) -> Result<()> {
+    fn on_included_gatt_services_complete(&self, peripheral_handle: PeripheralHandle,
+                                          service_handle: ServiceHandle)
+                                          -> Result<()> {
         let peripheral_state = self.get_peripheral_state(peripheral_handle);
         let peripheral_state_guard = peripheral_state.inner.read().unwrap();
 
@@ -845,15 +840,12 @@ impl Session {
                 let mut service_state_guard = service_state.inner.write().unwrap();
                 if !service_state_guard.included_services_complete {
                     service_state_guard.included_services_complete = true;
-                    let peripheral =
-                        Peripheral::wrap(self.clone(), peripheral_handle);
+                    let peripheral = Peripheral::wrap(self.clone(), peripheral_handle);
                     let service = Service::wrap(peripheral.clone(), service_handle);
-                    let _ = self.inner.event_bus.send(
-                        Event::ServiceIncludedGattServicesComplete {
-                            peripheral,
-                            service,
-                        },
-                    );
+                    let _ = self.inner
+                                .event_bus
+                                .send(Event::ServiceIncludedGattServicesComplete { peripheral,
+                                                                                   service });
                 }
             }
             Err(_) => {
@@ -863,13 +855,11 @@ impl Session {
         Ok(())
     }
 
-    fn on_gatt_characteristic_notification(
-        &self,
-        peripheral_handle: PeripheralHandle,
-        service_handle: ServiceHandle,
-        characteristic_handle: CharacteristicHandle,
-        uuid: Uuid
-    ) -> Result<()> {
+    fn on_gatt_characteristic_notification(&self, peripheral_handle: PeripheralHandle,
+                                           service_handle: ServiceHandle,
+                                           characteristic_handle: CharacteristicHandle,
+                                           uuid: Uuid)
+                                           -> Result<()> {
         let peripheral_state = self.get_peripheral_state(peripheral_handle);
         let peripheral_state_guard = peripheral_state.inner.read().unwrap();
 
@@ -881,27 +871,22 @@ impl Session {
                 // in case it might be significant for the device / application. This
                 // is only done on a best effort basis considering that some backends
                 // not not preserve the order.
-                if let Err(i) = service_state_guard
-                    .characteristics
-                    .binary_search(&characteristic_handle)
+                if let Err(i) = service_state_guard.characteristics
+                                                   .binary_search(&characteristic_handle)
                 {
-                    service_state_guard
-                        .characteristics
-                        .insert(i, characteristic_handle);
+                    service_state_guard.characteristics
+                                       .insert(i, characteristic_handle);
 
-                    let peripheral =
-                        Peripheral::wrap(self.clone(), peripheral_handle);
+                    let peripheral = Peripheral::wrap(self.clone(), peripheral_handle);
                     let service = Service::wrap(peripheral.clone(), service_handle);
                     let characteristic =
                         Characteristic::wrap(service.clone(), characteristic_handle);
-                    let _ = self.inner.event_bus.send(
-                        Event::ServiceGattCharacteristic {
-                            peripheral,
-                            service,
-                            characteristic,
-                            uuid,
-                        },
-                    );
+                    let _ = self.inner
+                                .event_bus
+                                .send(Event::ServiceGattCharacteristic { peripheral,
+                                                                         service,
+                                                                         characteristic,
+                                                                         uuid });
                 }
             }
             Err(_) => {
@@ -911,7 +896,9 @@ impl Session {
         Ok(())
     }
 
-    fn on_gatt_characteristics_complete(&self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle) -> Result<()> {
+    fn on_gatt_characteristics_complete(&self, peripheral_handle: PeripheralHandle,
+                                        service_handle: ServiceHandle)
+                                        -> Result<()> {
         let peripheral_state = self.get_peripheral_state(peripheral_handle);
         let peripheral_state_guard = peripheral_state.inner.read().unwrap();
 
@@ -920,15 +907,12 @@ impl Session {
                 let mut service_state_guard = service_state.inner.write().unwrap();
                 if !service_state_guard.characteristics_complete {
                     service_state_guard.characteristics_complete = true;
-                    let peripheral =
-                        Peripheral::wrap(self.clone(), peripheral_handle);
+                    let peripheral = Peripheral::wrap(self.clone(), peripheral_handle);
                     let service = Service::wrap(peripheral.clone(), service_handle);
-                    let _ = self.inner.event_bus.send(
-                        Event::ServiceGattCharacteristicsComplete {
-                            peripheral,
-                            service,
-                        },
-                    );
+                    let _ = self.inner
+                                .event_bus
+                                .send(Event::ServiceGattCharacteristicsComplete { peripheral,
+                                                                                  service });
                 }
             }
             Err(_) => {
@@ -938,31 +922,28 @@ impl Session {
         Ok(())
     }
 
-    fn on_gatt_characteristic_value_change_notification(
-        &self,
-        peripheral_handle: PeripheralHandle,
-        service_handle: ServiceHandle,
-        characteristic_handle: CharacteristicHandle,
-        value: Vec<u8>
-    ) -> Result<()> {
+    fn on_gatt_characteristic_value_change_notification(&self,
+                                                        peripheral_handle: PeripheralHandle,
+                                                        service_handle: ServiceHandle,
+                                                        characteristic_handle: CharacteristicHandle,
+                                                        value: Vec<u8>)
+                                                        -> Result<()> {
         let peripheral = Peripheral::wrap(self.clone(), peripheral_handle);
         let service = Service::wrap(peripheral.clone(), service_handle);
         let characteristic = Characteristic::wrap(service.clone(), characteristic_handle);
-        let _ = self.inner.event_bus.send(Event::ServiceGattCharacteristicValueNotify {
-            peripheral,
-            service,
-            characteristic,
-            value
-        });
+        let _ = self.inner
+                    .event_bus
+                    .send(Event::ServiceGattCharacteristicValueNotify { peripheral,
+                                                                        service,
+                                                                        characteristic,
+                                                                        value });
 
         // TODO: maintain a cache of the attribute value
         Ok(())
     }
 
-    async fn run_backend_task(
-        weak_session_inner: Weak<SessionInner>,
-        backend_bus: mpsc::UnboundedReceiver<BackendEvent>,
-    ) {
+    async fn run_backend_task(weak_session_inner: Weak<SessionInner>,
+                              backend_bus: mpsc::UnboundedReceiver<BackendEvent>) {
         trace!("Starting task to process backend events from the backend_bus...");
 
         let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(backend_bus);
@@ -992,79 +973,81 @@ impl Session {
                         log::error!("Error handling peripheral disconnect event: {:?}", err);
                     }
                 }
-                BackendEvent::PeripheralPropertySet {
-                    peripheral_handle,
-                    property,
-                } => {
-                    if let Err(err) = session.on_peripheral_property_set(peripheral_handle, property) {
+                BackendEvent::PeripheralPropertySet { peripheral_handle,
+                                                      property, } => {
+                    if let Err(err) =
+                        session.on_peripheral_property_set(peripheral_handle, property)
+                    {
                         log::error!("Error handling peripheral property set event: {:?}", err);
                     }
                 }
-                BackendEvent::PeripheralPrimaryGattService {
-                    peripheral_handle,
-                    service_handle,
-                    uuid,
-                } => {
-                    if let Err(err) = session.on_primary_gatt_service_notification(peripheral_handle, service_handle, uuid) {
-                        log::error!("Error handling primary gatt service notification: {:?}", err);
+                BackendEvent::PeripheralPrimaryGattService { peripheral_handle,
+                                                             service_handle,
+                                                             uuid, } => {
+                    if let Err(err) =
+                        session.on_primary_gatt_service_notification(peripheral_handle,
+                                                                     service_handle,
+                                                                     uuid)
+                    {
+                        log::error!("Error handling primary gatt service notification: {:?}",
+                                    err);
                     }
                 }
-                BackendEvent::PeripheralPrimaryGattServicesComplete {
-                    peripheral_handle, ..
-                } => {
+                BackendEvent::PeripheralPrimaryGattServicesComplete { peripheral_handle, .. } => {
                     if let Err(err) = session.on_primary_gatt_services_complete(peripheral_handle) {
                         log::error!("Error handling primary gatt services complete notification: {:?}", err);
                     }
                 }
-                BackendEvent::ServiceIncludedGattService {
-                    peripheral_handle,
-                    parent_service_handle,
-                    included_service_handle,
-                    uuid,
-                    ..
-                } => {
-                    if let Err(err) = session.on_included_gatt_service_notification(
-                            peripheral_handle, parent_service_handle, included_service_handle, uuid)
+                BackendEvent::ServiceIncludedGattService { peripheral_handle,
+                                                           parent_service_handle,
+                                                           included_service_handle,
+                                                           uuid,
+                                                           .. } => {
+                    if let Err(err) =
+                        session.on_included_gatt_service_notification(peripheral_handle,
+                                                                      parent_service_handle,
+                                                                      included_service_handle,
+                                                                      uuid)
                     {
-                        log::error!("Error handling included gatt service notification: {:?}", err);
+                        log::error!("Error handling included gatt service notification: {:?}",
+                                    err);
                     }
                 }
-                BackendEvent::ServiceIncludedGattServicesComplete {
-                    peripheral_handle,
-                    service_handle,
-                    ..
-                } => {
-                    if let Err(err) = session.on_included_gatt_services_complete(peripheral_handle, service_handle) {
+                BackendEvent::ServiceIncludedGattServicesComplete { peripheral_handle,
+                                                                    service_handle,
+                                                                    .. } => {
+                    if let Err(err) = session.on_included_gatt_services_complete(peripheral_handle,
+                                                                                 service_handle)
+                    {
                         log::error!("Error handling included gatt services complete notification: {:?}", err);
                     }
                 }
-                BackendEvent::ServiceGattCharacteristic {
-                    peripheral_handle,
-                    service_handle,
-                    characteristic_handle,
-                    uuid,
-                    ..
-                } => {
-                    if let Err(err) = session.on_gatt_characteristic_notification(
-                        peripheral_handle, service_handle, characteristic_handle, uuid)
+                BackendEvent::ServiceGattCharacteristic { peripheral_handle,
+                                                          service_handle,
+                                                          characteristic_handle,
+                                                          uuid,
+                                                          .. } => {
+                    if let Err(err) =
+                        session.on_gatt_characteristic_notification(peripheral_handle,
+                                                                    service_handle,
+                                                                    characteristic_handle,
+                                                                    uuid)
                     {
                         log::error!("Error handling gatt characteristic notification: {:?}", err);
                     }
                 }
-                BackendEvent::ServiceGattCharacteristicsComplete {
-                    peripheral_handle,
-                    service_handle,
-                } => {
-                    if let Err(err) = session.on_gatt_characteristics_complete(peripheral_handle, service_handle) {
+                BackendEvent::ServiceGattCharacteristicsComplete { peripheral_handle,
+                                                                   service_handle, } => {
+                    if let Err(err) =
+                        session.on_gatt_characteristics_complete(peripheral_handle, service_handle)
+                    {
                         log::error!("Error handling gatt characteristics complete notification: {:?}", err);
                     }
                 }
-                BackendEvent::ServiceGattCharacteristicNotify {
-                    peripheral_handle,
-                    service_handle,
-                    characteristic_handle,
-                    value
-                } => {
+                BackendEvent::ServiceGattCharacteristicNotify { peripheral_handle,
+                                                                service_handle,
+                                                                characteristic_handle,
+                                                                value, } => {
                     if let Err(err) = session.on_gatt_characteristic_value_change_notification(
                         peripheral_handle, service_handle, characteristic_handle, value)
                     {
@@ -1088,17 +1071,18 @@ impl Session {
     pub fn events(&self) -> Result<impl Stream<Item = Event>> {
         let receiver = self.inner.event_bus.subscribe();
         Ok(BroadcastStream::new(receiver).filter_map(|x| async move {
-            if x.is_ok() {
-                Some(x.unwrap())
-            } else {
-                None
-            }
-        }))
+                                             if x.is_ok() {
+                                                 Some(x.unwrap())
+                                             } else {
+                                                 None
+                                             }
+                                         }))
     }
 
     /// As a convenience this provides a filtered stream of events that guarantees
     /// any peripheral events will only related to the specified peripheral. Other
     /// events unrelated to peripherals will be delivered, unfiltered.
+    #[rustfmt::skip]
     pub fn peripheral_events(&self, peripheral: &Peripheral) -> Result<impl Stream<Item = Event>> {
         let filter_handle = peripheral.peripheral_handle;
 
@@ -1151,9 +1135,11 @@ impl Session {
     }
 
     pub fn peripherals(&self) -> Result<Vec<Peripheral>> {
-        Ok(self.inner.peripherals.iter().map(|item| {
-            Peripheral::wrap(self.clone(), *item.key())
-        }).collect())
+        Ok(self.inner
+               .peripherals
+               .iter()
+               .map(|item| Peripheral::wrap(self.clone(), *item.key()))
+               .collect())
     }
 
     pub(crate) fn backend_api(&self) -> &dyn BackendSession {
