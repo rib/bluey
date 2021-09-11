@@ -1140,6 +1140,12 @@ impl Session {
         Ok(())
     }
 
+    pub fn peripherals(&self) -> Result<Vec<Peripheral>> {
+        Ok(self.inner.peripherals.iter().map(|item| {
+            Peripheral::wrap(self.clone(), *item.key())
+        }).collect())
+    }
+
     pub(crate) fn backend_api(&self) -> &dyn BackendSession {
         self.inner.backend.api()
     }

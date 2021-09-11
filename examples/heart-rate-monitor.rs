@@ -4,11 +4,8 @@ use bmb::{
     PeripheralPropertyId,
 };
 use bmb::{characteristic, session};
-use env_logger::Builder;
 use futures::FutureExt;
 use log::{info, trace, warn};
-use std::char;
-use std::io::Write;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::signal;
