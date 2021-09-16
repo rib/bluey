@@ -84,10 +84,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some((_, event)) = mainloop.next().await {
         match event {
             Event::BtEvent(event) => match event {
-                bmb::Event::PeripheralFound { peripheral, .. } => {
-                    println!("Discovered peripheral: {} / {}",
-                             peripheral.name(),
-                             peripheral.address());
+                bmb::Event::PeripheralFound { peripheral: _, address, name, .. } => {
+                    println!("Discovered peripheral: {} / {}", name, address.to_string());
                 }
                 bmb::Event::PeripheralPropertyChanged { peripheral,
                                                         property_id,

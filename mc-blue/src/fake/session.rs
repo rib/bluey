@@ -9,9 +9,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::session::{BackendSession, Filter, SessionConfig};
-use crate::{
-    fake, BackendEvent, CharacteristicHandle, Error, PeripheralHandle, Result, ServiceHandle,
-};
+use crate::{Address, BackendEvent, CharacteristicHandle, Error, PeripheralHandle, Result, ServiceHandle, fake};
 
 #[derive(Debug)]
 pub(crate) struct FakeSession {}
@@ -30,6 +28,11 @@ impl BackendSession for FakeSession {
     async fn stop_scanning(&self) -> Result<()> {
         todo!();
     }
+
+    fn declare_peripheral(&self, address: Address) -> Result<PeripheralHandle> {
+        todo!();
+    }
+
     async fn peripheral_connect(&self, peripheral_handle: PeripheralHandle) -> Result<()> {
         todo!();
     }

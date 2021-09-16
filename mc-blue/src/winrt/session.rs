@@ -153,6 +153,38 @@ impl WinrtSession {
         })
     }
 
+    fn peripheral_from_mac(&self, address: u64) -> PeripheralHandle {
+        match self.inner.peripherals_by_mac.get(&address) {
+            None => {
+                let backend_bus = self.inner.backend_bus.clone();
+
+                let peripheral_id = self.inner.next_handle.fetch_add(1, Ordering::SeqCst);
+                let peripheral_handle = PeripheralHandle(peripheral_id);
+
+                let winrt_peripheral = WinrtPeripheral {
+                    address: address,
+                    peripheral_handle,
+                    inner: Arc::new(StdRwLock::new(WinrtPeripheralInner {
+                        ble_device: None,
+                        connection_status_handler: None,
+                        gatt_services: DashMap::new(),
+                        gatt_characteristics: DashMap::new(),
+                    })),
+                };
+                self.inner
+                    .peripherals_by_mac
+                    .insert(address, winrt_peripheral.clone());
+                self.inner
+                    .peripherals_by_handle
+                    .insert(peripheral_handle, winrt_peripheral);
+
+                let _ = backend_bus.send(BackendEvent::PeripheralFound { peripheral_handle });
+                peripheral_handle
+            }
+            Some(winrt_peripheral) => winrt_peripheral.peripheral_handle,
+        }
+    }
+
     fn on_advertisement_received(&self, args: &BluetoothLEAdvertisementReceivedEventArgs) {
         let advertisement = args.Advertisement().unwrap();
 
@@ -165,37 +197,7 @@ impl WinrtSession {
             }
         };
 
-        let peripheral_handle = {
-            let peripheral_handle = match self.inner.peripherals_by_mac.get(&address) {
-                None => {
-                    let peripheral_id = self.inner.next_handle.fetch_add(1, Ordering::SeqCst);
-                    let peripheral_handle = PeripheralHandle(peripheral_id);
-
-                    let winrt_peripheral = WinrtPeripheral {
-                        address: address,
-                        peripheral_handle,
-                        inner: Arc::new(StdRwLock::new(WinrtPeripheralInner {
-                            ble_device: None,
-                            connection_status_handler: None,
-                            gatt_services: DashMap::new(),
-                            gatt_characteristics: DashMap::new(),
-                        })),
-                    };
-                    self.inner
-                        .peripherals_by_mac
-                        .insert(address, winrt_peripheral.clone());
-                    self.inner
-                        .peripherals_by_handle
-                        .insert(peripheral_handle, winrt_peripheral);
-
-                    let _ = backend_bus.send(BackendEvent::PeripheralFound { peripheral_handle });
-                    peripheral_handle
-                }
-                Some(winrt_peripheral) => winrt_peripheral.peripheral_handle,
-            };
-
-            peripheral_handle
-        };
+        let peripheral_handle = self.peripheral_from_mac(address);
 
         let _ = backend_bus.send(BackendEvent::PeripheralPropertySet {
             peripheral_handle,
@@ -631,6 +633,14 @@ impl BackendSession for WinrtSession {
         trace!("winrt: stop scanning");
         self.inner.watcher.Stop()?;
         Ok(())
+    }
+
+    fn declare_peripheral(&self, address: Address) -> Result<PeripheralHandle> {
+        if let Address::MAC(MAC(mac)) = address {
+            Ok(self.peripheral_from_mac(mac))
+        } else {
+            Err(Error::Other(anyhow!("Unsupported declaration address")))
+        }
     }
 
     async fn peripheral_connect(&self, peripheral_handle: PeripheralHandle) -> Result<()> {

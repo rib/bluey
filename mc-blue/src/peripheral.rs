@@ -80,15 +80,12 @@ impl Peripheral {
         state_guard.address_type
     }
 
-    pub fn name(&self) -> String {
+    pub fn name(&self) -> Option<String> {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
         // NB: we wait until we have a name before a peripheral is advertised
         // to the application so we shouldn't ever report 'Unknown' here...
-        state_guard.name
-                   .as_ref()
-                   .unwrap_or(&format!("Unknown"))
-                   .clone()
+        state_guard.name.clone()
     }
 
     pub fn tx_power(&self) -> Option<i16> {

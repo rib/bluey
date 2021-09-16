@@ -5,6 +5,7 @@ use log::{info, trace, warn};
 use std::borrow::BorrowMut;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::ops::Add;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::RwLock as StdRwLock;
 use std::sync::{Arc, Weak};
@@ -71,6 +72,8 @@ struct SessionInner {
 pub(crate) trait BackendSession {
     async fn start_scanning(&self, filter: &Filter) -> Result<()>;
     async fn stop_scanning(&self) -> Result<()>;
+
+    fn declare_peripheral(&self, address: Address) -> Result<PeripheralHandle>;
 
     async fn peripheral_connect(&self, peripheral_handle: PeripheralHandle) -> Result<()>;
 
@@ -1140,6 +1143,11 @@ impl Session {
                .iter()
                .map(|item| Peripheral::wrap(self.clone(), *item.key()))
                .collect())
+    }
+
+    pub fn declare_peripheral(&self, address: Address) -> Result<Peripheral> {
+        let peripheral_handle = self.backend_api().declare_peripheral(address)?;
+        Ok(Peripheral::wrap(self.clone(), peripheral_handle))
     }
 
     pub(crate) fn backend_api(&self) -> &dyn BackendSession {
