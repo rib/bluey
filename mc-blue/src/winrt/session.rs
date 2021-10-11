@@ -653,8 +653,18 @@ impl BackendSession for WinrtSession {
             }
         };
 
-        let device = self.ensure_device_with_connection_status_handler(&winrt_peripheral)
-                         .await?;
+        let device = self.ensure_device_with_connection_status_handler(&winrt_peripheral).await?;
+
+        // Considering that we might not have previously enabled scanning and
+        // the peripheral might have been declared by the application based
+        // on a saved Address so this might be the first point where we learn
+        // the device's name...
+        let name = device.Name()?.to_string();
+        let backend_bus = self.inner.backend_bus.clone();
+        let _ = backend_bus.send(BackendEvent::PeripheralPropertySet {
+            peripheral_handle,
+            property: BackendPeripheralProperty::Name(name.to_string()),
+        });
 
         // Windows doesn't actually expose a connection-oriented API so to
         // 'connect' we just have to perform an action that we know requires
