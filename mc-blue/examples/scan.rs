@@ -1,3 +1,5 @@
+#![cfg(not(target_os="android"))]
+
 use bmb;
 use bmb::session;
 use futures::FutureExt;

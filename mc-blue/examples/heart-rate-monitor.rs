@@ -1,3 +1,5 @@
+#![cfg(not(target_os="android"))]
+
 use bmb::uuid::uuid_from_u16;
 use bmb::{
     self, characteristic::Characteristic, peripheral::Peripheral, service::Service,

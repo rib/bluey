@@ -29,6 +29,7 @@ arrayvec = "0.7"
 function_name = "0.2.0"
 lazy_static = "1"
 bitflags = "1"
+const_format = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = "0.19.0"
@@ -40,6 +41,10 @@ windows = "0.19.0"
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
+#jni = "0.19"
+jni = { path = "../../jni-rs" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
 version = "0.3"
