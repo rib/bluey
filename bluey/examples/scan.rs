@@ -1,7 +1,7 @@
 #![cfg(not(target_os="android"))]
 
-use bmb;
-use bmb::session;
+use bluey;
+use bluey::session;
 use futures::FutureExt;
 use std::io::Write;
 use std::pin::Pin;
@@ -16,7 +16,7 @@ enum EventSource {
 
 #[derive(Debug, Clone)]
 enum Event {
-    BtEvent(bmb::Event),
+    BtEvent(bluey::Event),
     Interrupt,
 }
 
@@ -49,13 +49,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some((_, event)) = mainloop.next().await {
         match event {
             Event::BtEvent(event) => match event {
-                bmb::Event::PeripheralFound { peripheral: _,
+                bluey::Event::PeripheralFound { peripheral: _,
                                               name,
                                               address,
                                               .. } => {
                     println!("Peripheral Found: {}: {}", name, address);
                 }
-                bmb::Event::PeripheralPropertyChanged { peripheral,
+                bluey::Event::PeripheralPropertyChanged { peripheral,
                                                         property_id,
                                                         .. } => {
                     println!("Peripheral Property Changed: {}: {:?}",

@@ -1,11 +1,11 @@
 #![cfg(not(target_os="android"))]
 
-use bmb::uuid::uuid_from_u16;
-use bmb::{
+use bluey::uuid::uuid_from_u16;
+use bluey::{
     self, characteristic::Characteristic, peripheral::Peripheral, service::Service,
     PeripheralPropertyId,
 };
-use bmb::{characteristic, session};
+use bluey::{characteristic, session};
 use futures::FutureExt;
 use log::{info, trace, warn};
 use std::pin::Pin;
@@ -25,7 +25,7 @@ enum EventSource {
 
 #[derive(Debug, Clone)]
 enum Event {
-    BtEvent(bmb::Event),
+    BtEvent(bluey::Event),
     Interrupt,
     Update,
 }
@@ -86,17 +86,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some((_, event)) = mainloop.next().await {
         match event {
             Event::BtEvent(event) => match event {
-                bmb::Event::PeripheralFound { peripheral: _, address, name, .. } => {
+                bluey::Event::PeripheralFound { peripheral: _, address, name, .. } => {
                     println!("Discovered peripheral: {} / {}", name, address.to_string());
                 }
-                bmb::Event::PeripheralPropertyChanged { peripheral,
+                bluey::Event::PeripheralPropertyChanged { peripheral,
                                                         property_id,
                                                         .. } => {
                     if property_id == PeripheralPropertyId::ServiceIds {
                         println!("Got notified of new service IDs: {:?}",
                                  peripheral.service_ids());
                     }
-                    if hr_monitor.is_none() && property_id == bmb::PeripheralPropertyId::ServiceIds
+                    if hr_monitor.is_none() && property_id == bluey::PeripheralPropertyId::ServiceIds
                     {
                         if peripheral.has_service_id(HEART_RATE_SERVICE_UUID) {
                             println!("Found heart rate monitor");
@@ -203,14 +203,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Event::BtEvent(event) => {
                     match event {
-                        bmb::Event::PeripheralPrimaryGattService { service, uuid, .. } => {
+                        bluey::Event::PeripheralPrimaryGattService { service, uuid, .. } => {
                             if uuid == HEART_RATE_SERVICE_UUID {
                                 println!("Discovered Heart Rate service");
                                 hr_service = Some(service);
                                 let _ = wake_tx.send(Event::Update); // Don't wait 1 second for the next update
                             }
                         }
-                        bmb::Event::ServiceGattCharacteristic { characteristic,
+                        bluey::Event::ServiceGattCharacteristic { characteristic,
                                                                 uuid,
                                                                 .. } => {
                             if uuid == HEART_RATE_MEASUREMENT_CHARACTERISTIC_UUID {
@@ -219,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let _ = wake_tx.send(Event::Update); // Don't wait 1 second for the next update
                             }
                         }
-                        bmb::Event::PeripheralDisconnected { .. } => {
+                        bluey::Event::PeripheralDisconnected { .. } => {
                             println!("Heart Rate Monitor Disconnected!");
                             // All GATT state becomes invalid after a disconnect...
                             hr_service = None;
@@ -230,7 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 mainloop.insert(EventSource::Poll, create_poll_stream());
                             }
                         }
-                        bmb::Event::ServiceGattCharacteristicValueNotify { characteristic,
+                        bluey::Event::ServiceGattCharacteristicValueNotify { characteristic,
                                                                            value,
                                                                            .. } => {
                             match &hr_characteristic {

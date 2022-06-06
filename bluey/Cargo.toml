@@ -1,17 +1,17 @@
 [package]
-name = "mc-blue"
+name = "bluey"
 readme = "README.md"
 version = "0.1.0"
 keywords = ["bluetooth", "ble", "gatt"]
 categories = ["hardware-support"]
 license = "MIT"
-repository = "https://github.com/rib/mc-blue"
+repository = "https://github.com/rib/bluey"
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-name = "bmb"
+name = "bluey"
 
 [dependencies]
 async-trait = "0.1"
@@ -44,7 +44,8 @@ wasm-bindgen-futures = "0.4"
 
 [target.'cfg(target_os = "android")'.dependencies]
 #jni = "0.19"
-jni = { path = "../../jni-rs" }
+#jni = { path = "../../jni-rs" }
+jni = { git = "https://github.com/rib/jni-rs" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
 version = "0.3"
