@@ -2,6 +2,10 @@
 resolver="2"
 
 members = [
-    "mc-blue",
-    "mc-blue-web",
+    "bluey",
+    "bluey-web"
+]
+
+exclude = [
+    "bluey-ui"
 ]

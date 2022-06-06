@@ -1,12 +1,12 @@
 [package]
-name = "mcblue-web"
+name = "bluey-web"
 version = "0.1.0"
 authors = ["Robert Bragg <robert@sixbynine.org>"]
 description = "A wasm package for Bluey McBlueFace"
 keywords = ["bluetooth", "ble", "gatt"]
 categories = ["hardware-support"]
 license = "MIT"
-repository = "https://github.com/rib/mc-blue"
+repository = "https://github.com/rib/bluey"
 edition = "2018"
 
 [lib]
@@ -14,5 +14,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wasm-bindgen = "0.2"
-mc-blue = { path = "../mc-blue" }
+bluey = { path = "../bluey" }
 uuid = { version = "0.8", features = ["wasm-bindgen"] }
