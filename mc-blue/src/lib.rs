@@ -1,4 +1,8 @@
 #![allow(unused_imports)]
+#![allow(unused)]
+
+//#[cfg(target_os = "android")]
+//use jni::sys::jvalue;
 
 use ::uuid::Uuid;
 use anyhow::anyhow;
@@ -21,10 +25,16 @@ pub mod service;
 use service::Service;
 
 pub mod characteristic;
-use characteristic::Characteristic;
+use characteristic::{Characteristic, CharacteristicProperties};
+
+pub mod descriptor;
+use descriptor::Descriptor;
 
 #[cfg(target_os = "windows")]
 mod winrt;
+
+#[cfg(target_os = "android")]
+mod android;
 
 mod fake;
 
@@ -124,11 +134,16 @@ impl FromStr for Address {
 
 #[test]
 fn mac_two_way() {
-    let addr = Address::from_str("01:02:03:04:05:06").unwrap();
+    let addr = Address::from_str("F1:E2:D3:C4:B5:A6").unwrap();
+    assert!(matches!(addr, Address::MAC(_)));
     let str = addr.to_string();
-    assert_eq!(str, "01:02:03:04:05:06");
+    // Note: we are also intentionally checking that we format the address octets
+    // as uppercase considering that Android is very particular about this and
+    // we rely on this to format address strings on Android.
+    assert_eq!(str, "F1:E2:D3:C4:B5:A6");
 
     let addr = Address::from_str("18c2a267-a539-4423-aecc-edeeb2784bcc").unwrap();
+    assert!(matches!(addr, Address::String(_)));
     let str = addr.to_string();
     assert_eq!(str, "18c2a267-a539-4423-aecc-edeeb2784bcc");
 }
@@ -142,6 +157,7 @@ pub enum AddressType {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct PeripheralHandle(u32);
+
 
 #[derive(Clone, Debug)]
 enum BackendPeripheralProperty {
@@ -194,15 +210,45 @@ pub enum PeripheralPropertyId {
 // of the include attributes themselves, not the referenced
 // services.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct ServiceHandle(u16);
+struct ServiceHandle(u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct CharacteristicHandle(u16);
+struct CharacteristicHandle(u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct DescriptorHandle(u32);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CacheMode {
     Cached,
     Uncached,
+}
+
+#[derive(Debug, thiserror::Error, Clone)]
+pub enum GattError {
+    #[error("Insufficient Authentication")]
+    InsufficientAuthentication,
+
+    #[error("Insufficient Authorization")]
+    InsufficientAuthorization,
+
+    #[error("Insufficient Encryption")]
+    InsufficientEncryption,
+
+    #[error("Read Not Permitted")]
+    ReadNotPermitted,
+
+    #[error("Read Not Permitted")]
+    WriteNotPermitted,
+
+    #[error("Unsupported request")]
+    Unsupported,
+
+    #[error("Congested")]
+    Congested,
+
+    #[error("General Failure")]
+    GeneralFailure(String),
 }
 
 #[derive(Clone, Debug)]
@@ -217,44 +263,83 @@ pub(crate) enum BackendEvent {
     PeripheralConnected {
         peripheral_handle: PeripheralHandle,
     },
+    PeripheralConnectionFailed {
+        peripheral_handle: PeripheralHandle,
+        error: Option<GattError>
+    },
     PeripheralDisconnected {
         peripheral_handle: PeripheralHandle,
+        error: Option<GattError>
     },
-    PeripheralPrimaryGattService {
+    GattService {
         peripheral_handle: PeripheralHandle,
         service_handle: ServiceHandle,
         uuid: Uuid,
     },
-    PeripheralPrimaryGattServicesComplete {
+    GattServicesComplete {
         peripheral_handle: PeripheralHandle,
+        error: Option<GattError>
     },
-    ServiceIncludedGattService {
+    GattIncludedService {
         peripheral_handle: PeripheralHandle,
         parent_service_handle: ServiceHandle,
         included_service_handle: ServiceHandle,
         uuid: Uuid,
     },
-    ServiceIncludedGattServicesComplete {
+    GattIncludedServicesComplete {
         peripheral_handle: PeripheralHandle,
         service_handle: ServiceHandle,
+        error: Option<GattError>
     },
-    ServiceGattCharacteristic {
+    GattCharacteristic {
         peripheral_handle: PeripheralHandle,
         service_handle: ServiceHandle,
         characteristic_handle: CharacteristicHandle,
         uuid: Uuid,
+        properties: CharacteristicProperties
     },
-    ServiceGattCharacteristicsComplete {
+    GattCharacteristicsComplete {
         peripheral_handle: PeripheralHandle,
         service_handle: ServiceHandle,
+        error: Option<GattError>
     },
-    ServiceGattCharacteristicNotify {
+    GattCharacteristicWriteNotify {
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle,
+    },
+    GattCharacteristicNotify {
         peripheral_handle: PeripheralHandle,
         service_handle: ServiceHandle,
         characteristic_handle: CharacteristicHandle,
         value: Vec<u8>,
     },
-
+    GattDescriptor {
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle,
+        descriptor_handle: DescriptorHandle,
+        uuid: Uuid,
+    },
+    GattDescriptorsComplete {
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle,
+        error: Option<GattError>
+    },
+    GattDescriptorWriteNotify {
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle,
+        descriptor_handle: DescriptorHandle,
+    },
+    GattDescriptorNotify {
+        peripheral_handle: PeripheralHandle,
+        service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle,
+        descriptor_handle: DescriptorHandle,
+        value: Vec<u8>,
+    },
     Flush(u32),
 }
 
@@ -273,6 +358,12 @@ pub enum Event {
         peripheral: Peripheral,
     },
 
+    #[non_exhaustive]
+    PeripheralFailedToConnect {
+        peripheral: Peripheral,
+        error: Option<GattError>
+    },
+
     /// Indicates that a peripheral has disconnected.
     ///
     /// Once a peripheral has disconnected then all previously associated
@@ -282,6 +373,7 @@ pub enum Event {
     #[non_exhaustive]
     PeripheralDisconnected {
         peripheral: Peripheral,
+        error: Option<GattError>
     },
     #[non_exhaustive]
     PeripheralPropertyChanged {
@@ -329,7 +421,20 @@ pub enum Event {
         characteristic: Characteristic,
         value: Vec<u8>,
     },
-
+    #[non_exhaustive]
+    ServiceGattDescriptor {
+        peripheral: Peripheral,
+        service: Service,
+        characteristic: Characteristic,
+        descriptor: Descriptor,
+        uuid: Uuid, // just for convenience
+    },
+    #[non_exhaustive]
+    ServiceGattDescriptorsComplete {
+        peripheral: Peripheral,
+        service: Service,
+        characteristic: Characteristic,
+    },
     Flush(u32),
 }
 /*
@@ -381,13 +486,16 @@ pub enum Error {
     PeripheralUnreachable,
 
     #[error("There was a GATT communication protocol error")]
-    PeripheralGattProtocolError(u8),
+    PeripheralGattProtocolError(#[from] GattError),
 
     #[error("Access Denied")]
     PeripheralAccessDenied,
 
     #[error("Invalid State Reference")]
     InvalidStateReference,
+
+    #[error("The system doesn't support this request / operation")]
+    Unsupported,
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),

@@ -94,7 +94,7 @@ impl Service {
 
         Ok(service_state_guard.characteristics
                               .iter()
-                              .map(|handle| Characteristic::wrap(self.clone(), *handle))
+                              .map(|handle| Characteristic::wrap(self.peripheral.clone(), *handle))
                               .collect())
     }
 }

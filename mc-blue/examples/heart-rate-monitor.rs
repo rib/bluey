@@ -184,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // Although we know the device supports the service we want, we
                                 // still need to discover a specific instance of that service ...
                                 println!("Initiating Gatt service discovery...");
-                                if let Err(err) = hr_monitor.discover_services().await {
+                                if let Err(err) = hr_monitor.discover_services(None).await {
                                     println!(
                                         "Failed to initiate discovery of peripheral services: {:?}",
                                         err
