@@ -1,51 +1,132 @@
-# 🐋🦷 Bluey McBluetooth 🦷🐋
-
-_The hardest part with any new project is the naming; so big thanks to the
-[team](https://www.bbc.co.uk/news/uk-36225652) that voted on our new name!_
-
-# ☠ WIP ☠
-
-_This is still a work in progress._ It currently supports:
-* Windows only so far
-* Scanning for devices and delivering advertising data, such as service IDs,
-service data, tx, rssi etc
-* Basic GATT state; exporting Services => Included Services => Characteristics (It doesn't expose descriptors yet).
-* Reading/Writing GATT characteristics and subscribing to notifications.
+# 🐋🦷 Bluey McBluetooth[*](#name) 🦷🐋
 
 # Overview
 
-McBlue is a cross-platform Bluetooth library, focused on Bluetooth Low Energy
-peripheral support via GAP advertising packets for scanning and connected
-GATT services.
+Bluey is a cross-platform Rust API for accessing Bluetooth Low Energy devices.
 
-For now the library is focused on enabling Windows support and I'll most likely
-enable Android after that.
+Bluey supports scanning and connecting to GATT services and currently supports
+Windows and Android (with the plan to support macOS, iOS, Linux and Web Bluetooth
+too).
 
-My main interest is in supporting access to BLE heart rate monitors in VR
-(for [RealFit VR](https://realfit.co/))
+The general design mirrors Core Bluetooth in many ways, with an event stream
+instead of delegate callbacks.
 
-Is a library _really_ cross-platform when it only actually works on one
-platform?  Probably not, but at this stage I'm holding off from enabling other
-platforms, besides keeping aware of some of the different platform-specific
-quirks/limitations, so that it doesn't get in the way of first getting one
-platform (Windows) working well. I'm generally trying to keep familiar with
-Corebluetooth, Bluez, Android and Web Bluetooth APIs as I go.
+The library was originally created to help enable connectivity with health and fitness
+wearables and equipment in [RealFit](http://realfit.co).
+
+The aim is to be able to implement support for different devices against a single
+API instead of needing to implement that same support repeatedly for different
+platforms.
+
+# Bluey UI
+
+For testing the library there is a cross-platform (Egui based) application
+that support scanning for peripherals, and then connecting to them and
+browsing their services, characteristics and descriptors - including
+reading and subscribing to characteristic values and reading descriptor
+values.
+
+![Screenshot of Bluey-UI showing heart rate monitor](https://github.com/rib/bluey/blob/android-support/bluey-ui/docs/images/bluey_ui_hrm.png)
+
+# Features
+
+## Scanner State
+
+This is the state that can be discovered while scanning for peripherals (without connecting):
+
+| State | Windows | Android |
+|-------|---------|---------|
+| Address | ✓ | ✓ |
+| Address Type | ✓ | ✓ |
+| Name | ✓ | ✓ |
+| Tx Power | ✓ | ✓ |
+| RSSI | ✓ | ✓ |
+| Service Uuids | ✓ | ✓ |
+| Service Data | ✓ |   |
+| Manufacturer Data | ✓ | ✓ |
+
+On Android Bluey optionally supports using the Companion API to select a peripheral instead of scanning.
+Although the Companion API hides scanning state from the application this has the advantage of not
+requiring "fine location" permissions on Android.
+
+
+## GATT Features
+
+|Feature| Windows | Android |
+|-------|---------|---------|
+| Discover Services | ✓ | ✓ |
+| ┗ Discover Service Includes | ✓ | ✓ |
+| ┗ Discover Characteristics | ✓ | ✓ |
+|   ┗ Read Characteristics | ✓ | ✓ |
+|   ┗ Write Characteristics | ✓ | ✓ |
+|   ┗ Subscribe Characteristic Notifications | ✓ | ✓ |
+|   ┗ Discover Descriptors | ✓ | ✓ |
+|     ┗ Read Descriptors | ✓ | ✓ |
+|     ┗ Write Descriptors | ✓ | ✓ |
+
+_Note: Bluey also supports there being multiple instances of a service or characteristic that may
+have the same Uuid, differentiated by their underlying AT handle. Where possible Bluey will also
+preserve the on-device ordering of services and characteristics._
+
+## Peripheral, Service, Characteristic and Descriptor State
+
+| Peripheral Property | Windows | Android |
+|---------------------|---------|---------|
+| Address (MAC 48 or String) | ✓ | ✓ |
+| Address Type | ✓ | ✓ |
+| Name | ✓ | ✓ |
+| Tx Power Level | ✓ | ✓ |
+| Rssi | ✓ | ✓ |
+| Service Uuids | ✓ | ✓ |
+| (Primary) Services | ✓ | ✓ |
+| (Primary + Secondary) Services | ✓ | ✓ |
+| Service Data | ✓ |  |
+| Manufacturer Data | ✓ | ✓ |
+
+| Service Property | Windows | Android |
+|------------------|---------|---------|
+| Uuid | ✓ | ✓ |
+| Included Services | ✓ | ✓ |
+| Characteristics | ✓ | ✓ |
+
+| Characteristic Property | Windows | Android |
+|-------------------------|---------|---------|
+| Uuid | ✓ | ✓ |
+| Descriptors | ✓ | ✓ |
+| Value (Read/Write/Subscribe) | ✓ | ✓ |
+
+| Descriptor Property | Windows | Android |
+|-------------------------|---------|---------|
+| Uuid | ✓ | ✓ |
+| Value (Read/Write) | ✓ | ✓ |
+
+## Limitations
+
+The API currently only supports central mode (i.e. connecting to peripherals, not
+advertising peripherals)
+
+It would be good to support peripheral mode in the future as a potential means to
+help test the library via fake peripherals.
+
+There's currently no support for L2CAP sockets.
 
 # API
 
-I tend to like libraries that provide an opinionated API that can make 99% of
-real-world use cases a breeze but that also offer (clearly delineated)
-lower-level entry points in case you need to poke at unusual corner cases.
-So that's hopefully what I'll end up doing here.
+The entry point into the API is through the creation of a `Session` which is the
+overall state tracker for the library.
 
-Different to some of the other Rust Bluetooth libraries McBlue provides
-a unified event stream that covers central scanning data as well as
-per-peripheral updates. In my experience so far I find this is much more
-convenient than having to juggle streams coming and going for different
-peripherals.
+`Peripheral`s can be found via scanning and then connecting to a `Peripheral`
+enables you to discover `Service`s, `Characteristic`s and `Descriptor`s.
 
-When you only care about a single peripheral though the API can filter
-events for you.
+Each `Session` provides an `events()` stream that notifies applications of
+state changes (such as discovering peripherals, or disconnecting peripherals)
+and the completion of Gatt requests. This design allows for IO with devices to
+complete asynchronously and is practical to integrate into the event loop of a
+higher-level application.
+
+By default, session events may relate to any number of peripherals but if it's
+convenient for applications they can also create filtered streams for a single
+peripheral that the application is interested in.
 
 A simple app that starts scanning currently looks something like this:
 ```rust
@@ -114,32 +195,56 @@ an address for being able to use with the API again in the future. (E.g. so
 an application can remember a user's choice of device to speed up reconnecting
 again in the future).
 
-# (mostly) Stateless backends.
+# Design
+
+## (mostly) Stateless backends.
 
 One of the notable things I've been aiming for with this implementation is to
 keep all higher-level state tracking in common code instead of requiring
-backends to handle state tracking.
+backends to handle state tracking / caching.
 
-Besides having some traits for being able to issue requests to the backends
-they have a very narrow interface for delivering a stream of events to the
-frontend state tracker.
+Backends implement a `BackendSession` trait for accepting requests from the
+frontend and then all state updates are delivered to the frontend via an
+internal stream of events.
 
 This stream/event based approach should lend itself to both tracing and testing.
-The idea is to have a 'fake' backend which can be selected at runtime for unit
-tests to be able to inject a synthetic stream of data. (otherwise
-if all testing relies on testing with real hardware it's going to get really
-impractical to test)
 
-Tracing by capturing data sent from the backend can be implemented in one place
-and if this data can then be replayed via the fake backend that should help
-with higher-level integration testing for the state tracking code as well as
-for applications - again without always needing to use real hardware.
+One future goal is to support synthetic peripherals via a "fake" backend that
+make it possible to perform high-level testing of applications against a variety
+of emulated devices in a way that's more practical than always needing to
+test with physical hardware. To this end, it should also be possible to implement
+common tracing features that make it easy to define fake test peripherals based
+on real device data.
 
 # Alternatives
 
-The only other (Rust) Bluetooth library I found that was supporting Windows and
-aiming to be cross-platform was [btleplug](https://github.com/deviceplug/btleplug)
-which is what I first started using. Although I've been contributing various
-changes upstream I also ended up wanting to investigate higher level design choices
-without necessarily knowing that my ideas would work out as envisioned. Definitely
-check it out if need an _actually_ cross-platform Bluetooth library now!
+## Btleplug
+
+[btleplug](https://github.com/deviceplug/btleplug) also provides a
+cross-platform Bluetooth LE Rust API.
+
+These are a few of the technical differences:
+- Session wide event stream in Bluey, which can be (optionally) filtered down to
+per-peripheral events. Btleplug provides a separate event stream per-peripheral and
+separate adapter events.
+- Individual property getters in Bluey (for things like address, name, rssi, tx power
+etc). Btleplug provides an aggregated property structure so you query (copy)
+all properties at the same time.
+- Bluey events can notify individual peripheral property changes.
+- Bluey events directly include handles to any relevant peripheral, characteristic
+or descriptor (which can be used to make API calls against) without needing to
+e.g. indirectly map peripheral IDs from events to peripherals.
+- Bluey is designed to support peripherals that may advertise multiple instances
+of a service of characteristic with the same uuid (differentiated by their AT handle).
+Btleplug notifies characteristic changes by uuid which means it wouldn't be
+able to differentiate multiple instances of a characteristic.
+- Btleplug supports macOS, iOS and Linux
+
+## Servo Web Bluetooth
+
+Although no longer developed or maintained, the Servo web browser originally implemented
+various web bluetooth backends in Rust which are linked [here](https://szeged.github.io/servo/)
+
+# Name
+_The hardest part with any new project is the naming; so big thanks to the
+ [team](https://www.bbc.co.uk/news/uk-36225652) that voted on our new name!_
