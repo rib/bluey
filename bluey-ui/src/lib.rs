@@ -3,10 +3,8 @@
 // positives atm :(
 #![allow(dead_code)]
 
-use log::{error, warn, info, debug, trace};
-
-use std::thread;
-use winit::event_loop::{EventLoopWindowTarget, EventLoopBuilder, EventLoopProxy};
+use std::time::Duration;
+use winit::event_loop::{EventLoopWindowTarget, EventLoopBuilder};
 
 use winit::{
     event_loop::{ControlFlow},
@@ -14,11 +12,10 @@ use winit::{
 
 use egui_wgpu::winit::Painter;
 use egui_winit::State;
-//use egui_winit_platform::{Platform, PlatformDescriptor};
 use winit::event::Event::*;
 
 #[cfg(target_os="android")]
-use jni::objects::JObject;
+use android_activity::AndroidApp;
 
 mod ble;
 mod ui;
@@ -29,8 +26,6 @@ const INITIAL_HEIGHT: u32 = 1080;
 
 // Needs to match whatever is used in
 const COMPANION_CHOOSER_REQUEST_CODE: u32 = 0;
-
-
 
 
 /// Enable egui to request redraws via a custom Winit event...
@@ -69,9 +64,7 @@ fn create_window<T>(event_loop: &EventLoopWindowTarget<T>, state: &mut State, pa
 }
 
 
-fn _main() {
-    let event_loop: winit::event_loop::EventLoop<ui::Event> = EventLoopBuilder::with_user_event().build();
-
+fn _main(event_loop: winit::event_loop::EventLoop<ui::Event>) {
     let ctx = egui::Context::default();
     let repaint_signal = RepaintSignal(std::sync::Arc::new(std::sync::Mutex::new(
         event_loop.create_proxy()
@@ -83,7 +76,7 @@ fn _main() {
     let mut winit_state = egui_winit::State::new(&event_loop);
     let mut painter = egui_wgpu::winit::Painter::new(
         wgpu::Backends::all(),
-        wgpu::PowerPreference::LowPower,
+        wgpu::PowerPreference::HighPerformance,
         wgpu::DeviceDescriptor {
             label: None,
             features: wgpu::Features::default(),
@@ -102,17 +95,15 @@ fn _main() {
         None);
         //Some(COMPANION_CHOOSER_REQUEST_CODE));
 
-    // On most platforms we can immediately create a winit window. On Android we manage
-    // window + surface state according to Resumed/Paused events.
-    #[cfg(not(target_os="android"))]
-    {
-        window = Some(create_window(&event_loop, &mut winit_state, &mut painter));
-    }
 
     event_loop.run(move |event, event_loop, control_flow| {
 
         match event {
-            #[cfg(target_os="android")]
+            NewEvents(..) => {
+                // By default we just wait for new events
+                *control_flow = ControlFlow::Wait;
+            }
+
             Resumed => {
                 match window {
                     None => {
@@ -131,12 +122,13 @@ fn _main() {
             }
 
             RedrawRequested(..) => {
+                #[allow(unused_mut)]
                 if let Some(window) = window.as_ref() {
                     let mut raw_input = winit_state.take_egui_input(window);
 
                     #[cfg(target_os="android")]
                     if let Some(ppp) = raw_input.pixels_per_point {
-                        raw_input.pixels_per_point = Some(ppp * 4.0);
+                        raw_input.pixels_per_point = Some(ppp * 2.0);
                     }
 
                     let full_output = ctx.run(raw_input, |ctx| {
@@ -149,8 +141,10 @@ fn _main() {
                         &ctx.tessellate(full_output.shapes),
                         &full_output.textures_delta);
 
-                    if full_output.needs_repaint {
+                    if full_output.repaint_after.is_zero() {
                         window.request_redraw();
+                    } else if full_output.repaint_after < Duration::from_secs(1) { // avoid overflow panic
+                        *control_flow = ControlFlow::WaitUntil(std::time::Instant::now() + full_output.repaint_after);
                     }
                 }
             }
@@ -180,18 +174,20 @@ fn _main() {
     });
 }
 
-fn _tokio_main() {
+fn _tokio_main(event_loop: winit::event_loop::EventLoop<ui::Event>) {
     // We create a tokio runtime manually because on Android we need to hook into
     // thread spawning to attach them to the JVM.
     let runtime = tokio_runtime::build_tokio_runtime().unwrap();
     runtime.block_on(async {
-        _main()
+        _main(event_loop)
     })
 }
 
 #[cfg(target_os="android")]
 #[no_mangle]
-extern "C" fn android_main() {
+fn android_main(app: AndroidApp) {
+    use winit::platform::android::EventLoopBuilderExtAndroid;
+
     android_logger::init_once(
         android_logger::Config::default()
             .with_tag("blueyui")
@@ -200,7 +196,11 @@ extern "C" fn android_main() {
         )
     );
 
-    _tokio_main();
+    let event_loop: winit::event_loop::EventLoop<ui::Event> = EventLoopBuilder::with_user_event()
+        .with_android_app(app)
+        .build();
+
+    _tokio_main(event_loop);
 }
 // Stop rust-analyzer from complaining that this file doesn't have a main() function...
 #[cfg(target_os="android")]
@@ -215,5 +215,6 @@ fn main() {
         .parse_default_env()
         .init();
 
-    _tokio_main();
+    let event_loop: winit::event_loop::EventLoop<ui::Event> = EventLoopBuilder::with_user_event().build();
+    _tokio_main(event_loop);
 }

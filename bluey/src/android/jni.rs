@@ -110,8 +110,11 @@ pub fn try_call_string_method(env: jni::JNIEnv, obj: JObject, method_id: JMethod
         if obj.is_null() {
             return Ok(None);
         }
-        let s = env.get_string(jni::objects::JString::from(obj))?;
-        let s = s.to_str().map_err(|err| { Error::Other(anyhow!("JNI: invalid utf8 for returned String: {:?}", err))})?;
+        let js = env.get_string(jni::objects::JString::from(obj))?;
+        let s = js.to_str().map_err(|err| {
+            let lossy_s = js.to_string_lossy().to_string();
+            Error::Other(anyhow!("JNI: invalid utf8 for returned String: {:?}, lossy = {}", err, lossy_s))
+        })?;
         return Ok(Some(s.to_string()));
     } else {
         return Err(Error::Other(anyhow!("JNI: unexpected return type")))

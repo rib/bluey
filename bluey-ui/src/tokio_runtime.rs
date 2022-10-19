@@ -1,8 +1,7 @@
-use log::{debug, trace};
 
 #[cfg(target_os="android")]
 fn configure_tokio_builder_for_android_jvm(builder: &mut tokio::runtime::Builder) {
-    debug!("create_tokio_runtime_builder_android");
+    log::debug!("create_tokio_runtime_builder_android");
 
     let ctx = ndk_context::android_context();
     let jvm_ptr = ctx.vm();
@@ -14,13 +13,13 @@ fn configure_tokio_builder_for_android_jvm(builder: &mut tokio::runtime::Builder
 
     builder.on_thread_start(move || {
         let thread_id = std::thread::current().id();
-        debug!("JVM: Attaching tokio thread ({thread_id:?})");
+        log::debug!("JVM: Attaching tokio thread ({thread_id:?})");
         thread_attach_jvm.attach_current_thread_permanently().unwrap();
     });
     builder.on_thread_stop(move || {
         thread_detach_jvm.detach_current_thread();
         let thread_id = std::thread::current().id();
-        debug!("JVM: Detached tokio thread ({thread_id:?}");
+        log::debug!("JVM: Detached tokio thread ({thread_id:?}");
     });
 }
 
@@ -31,6 +30,7 @@ fn create_tokio_runtime_builder_default() -> tokio::runtime::Builder {
     builder
 }
 
+#[allow(unused_mut)]
 fn create_tokio_runtime_builder() -> tokio::runtime::Builder {
     let mut builder = create_tokio_runtime_builder_default();
 

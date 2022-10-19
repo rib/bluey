@@ -18,7 +18,6 @@ async-trait = "0.1"
 futures = "0.3"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros"] }
 tokio-stream = { version = "0.1", features = ["sync"]}
-env_logger = "0.9"
 log = "0.4"
 thiserror = "1.0"
 anyhow = "1.0"
@@ -43,9 +42,7 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 
 [target.'cfg(target_os = "android")'.dependencies]
-#jni = "0.19"
-#jni = { path = "../../jni-rs" }
-jni = { git = "https://github.com/rib/jni-rs" }
+jni = "0.20"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
 version = "0.3"

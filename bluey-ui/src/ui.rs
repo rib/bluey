@@ -5,7 +5,7 @@
 use std::{collections::{HashSet, HashMap, VecDeque}, time::{Instant, Duration}};
 
 use bluey::{peripheral::Peripheral, uuid::BluetoothUuid, service::Service, characteristic::{Characteristic, CharacteristicProperties}, descriptor::Descriptor};
-use log::{error, warn, info, debug, trace};
+use log::{info, debug};
 use serde::{de, Deserialize};
 use uuid::Uuid;
 use lazy_static::lazy_static;

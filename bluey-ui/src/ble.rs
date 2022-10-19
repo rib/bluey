@@ -6,8 +6,6 @@ use winit::event_loop::EventLoopProxy;
 use crate::tokio_runtime::*;
 use crate::ui;
 
-use futures::FutureExt;
-//use futures::stream::StreamExt;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio_stream::wrappers::{IntervalStream, UnboundedReceiverStream};
@@ -20,7 +18,7 @@ use bluey::{
     self, descriptor::Descriptor, characteristic::Characteristic, peripheral::Peripheral, service::Service,
     PeripheralPropertyId,
 };
-use bluey::{characteristic, session};
+use bluey::session;
 
 #[derive(Debug, Clone)]
 pub enum BleRequest {
@@ -124,6 +122,7 @@ impl BleService {
     }
 
     // XXX: ideally this should probably be run as a proper Android Service
+    #[allow(unused_variables)]
     pub async fn bluetooth_service(event_proxy: EventLoopProxy<crate::ui::Event>,
         ui_requests: tokio::sync::mpsc::UnboundedReceiver<BleRequest>,
         companion_chooser_request_code: Option<u32>) -> anyhow::Result<()> {
@@ -135,7 +134,7 @@ impl BleService {
             let jvm = unsafe { jni::JavaVM::from_raw(jvm_ptr.cast()).expect("Expected to find JVM via ndk_context crate") };
             let activity_ptr = ctx.context();
             //let activity = ;
-            let activity = jni::objects::JObject::from(activity_ptr as jni::sys::jobject);
+            let activity = unsafe { jni::objects::JObject::from_raw(activity_ptr as jni::sys::jobject) };
             //let activity = env.new_global_ref()?;
             let env = jvm.attach_current_thread_permanently().unwrap();
 
@@ -168,7 +167,7 @@ impl BleService {
 
         // This channel gives us a way to immediately queue events for ourself from within the loop
         // (e.g. to trigger updates for state transitions without needing to wait)
-        let (wake_tx, wake_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_wake_tx, wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let wake_rx_stream = UnboundedReceiverStream::new(wake_rx);
         let wake_rx_events: Pin<Box<dyn Stream<Item = Event> + Send>> = Box::pin(wake_rx_stream);
         mainloop.insert(EventSource::Waker, wake_rx_events);
@@ -179,8 +178,6 @@ impl BleService {
         mainloop.insert(EventSource::Poll, poll_events);
 
         let mut hr_monitor = None;
-        let mut hr_service: Option<Service> = None;
-        let mut hr_characteristic: Option<Characteristic> = None;
 
         let mut state = State::Idle;
 
@@ -192,7 +189,7 @@ impl BleService {
                     match req {
                         BleRequest::StartScanning => {
                             match state {
-                                Idle => {
+                                State::Idle => {
                                     let filter = session::Filter::new();
                                     trace!("Starting scanning...");
                                     session.start_scanning(filter).await?; // FIXME: don't quit service on error
@@ -205,7 +202,7 @@ impl BleService {
                         }
                         BleRequest::StopScanning => {
                             match state {
-                                Scanning => {
+                                State::Scanning => {
                                     trace!("Stopping scanning...");
                                     session.stop_scanning().await?; // FIXME: don't quit service on error
                                     state = State::Idle;
@@ -299,7 +296,7 @@ impl BleService {
                 }
                 Event::BtEvent(event) => {
                     match &event {
-                        bluey::Event::PeripheralFound { peripheral, address, name, .. } => {
+                        bluey::Event::PeripheralFound { address, name, .. } => {
                             info!("Discovered peripheral: {} / {}", name, address.to_string());
                         }
                         bluey::Event::PeripheralPropertyChanged { peripheral,
@@ -363,9 +360,6 @@ impl BleService {
 
                     let _ = event_proxy.send_event(ui::Event::Ble(event));
                 },
-                _ => {
-                    error!("Unhandled event");
-                }
             }
         }
 

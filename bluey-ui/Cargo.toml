@@ -8,12 +8,9 @@ resolver = "2"
 
 [dependencies]
 log = "0.4"
-winit = "0.26"
-wgpu = "0.12.0"
+winit = "0.27.2"
+wgpu = "0.13.0"
 pollster = "0.2"
-egui = "0.18"
-egui-wgpu = { version = "0.18", features = [ "winit" ] }
-egui-winit = { version = "0.18", default-features = false }
 bluey = { path = "../bluey" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros"] }
 tokio-stream = { version = "0.1", features = ["sync"]}
@@ -23,31 +20,30 @@ futures = "0.3"
 serde = "1"
 serde_json = "1"
 lazy_static = "1"
+egui = "0.19"
+egui-wgpu = { version = "0.19", features = [ "winit" ] }
+egui-winit = "0.19"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 env_logger = "0.9"
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.11.0"
-game-activity = { git = "https://github.com/rib/agdk-rust" }
-#game-activity = { path="../../game-activity" }
-#jni = "0.19"
-#jni = { path = "../../../jni-rs" }
-jni = { git = "https://github.com/rib/jni-rs" }
+android-activity = { version = "0.4.0-beta.1", features = [ "game-activity" ] }
+jni = "0.20"
 ndk-context = "0.1.1"
 
 [patch.crates-io]
-winit = { git = "https://github.com/rib/winit", branch = "agdk-game-activity" }
+winit = { git = "https://github.com/rib/winit", branch = "android-activity" }
 #winit = { path="../../../winit" }
-egui = { git = "https://github.com/emilk/egui" }
-egui-wgpu = { git = "https://github.com/emilk/egui" }
-egui-winit = { git = "https://github.com/emilk/egui" }
-#egui_extras = { git = "https://github.com/emilk/egui" }
-#egui = { path = "../../../egui/egui" }
-#egui-wgpu = { path = "../../../egui/egui-wgpu" }
-#egui-winit = { path = "../../../egui/egui-winit" }
-wgpu = { git = "https://github.com/rib/wgpu", branch = "acquire_texture_duration_timeouts_v0.12" }
-#wgpu = { path = "../../../wgpu/wgpu" }
+
+# Egui 0.19 is missing some fixes for Android so we need to build against
+# git master for now
+#egui = { git = "https://github.com/emilk/egui" }
+#eframe = { git = "https://github.com/emilk/egui" }
+#egui_demo_lib = { git = "https://github.com/emilk/egui" }
+#egui = { path = "../../../egui/crates/egui" }
+#eframe = { path = "../../../egui/crates/eframe" }
 
 [features]
 default = []
