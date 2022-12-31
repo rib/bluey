@@ -65,4 +65,3 @@ features = [
 # upstream pretty_env_logger is no longer maintained...
 pretty_env_logger = { git = "https://github.com/project-anni/pretty-env-logger.git" }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "signal"] }
-

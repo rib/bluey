@@ -14,10 +14,10 @@ use bindings::Windows::Devices::Bluetooth::Advertisement::*;
 use bindings::Windows::Devices::Bluetooth::BluetoothDeviceId;
 use bindings::Windows::Devices::Bluetooth::GenericAttributeProfile::{
     GattCharacteristic, GattCharacteristicProperties, GattCharacteristicsResult,
-    GattClientCharacteristicConfigurationDescriptorValue, GattCommunicationStatus,
-    GattDeviceService, GattDeviceServicesResult, GattValueChangedEventArgs, GattWriteOption,
-    GattProtocolError, GattSession, GattSessionStatusChangedEventArgs, GattSessionStatus,
-    GattDescriptorsResult, GattDescriptor
+    GattClientCharacteristicConfigurationDescriptorValue, GattCommunicationStatus, GattDescriptor,
+    GattDescriptorsResult, GattDeviceService, GattDeviceServicesResult, GattProtocolError,
+    GattSession, GattSessionStatus, GattSessionStatusChangedEventArgs, GattValueChangedEventArgs,
+    GattWriteOption,
 };
 use bindings::Windows::Devices::Bluetooth::{BluetoothAddressType, BluetoothCacheMode};
 use bindings::Windows::Devices::Bluetooth::{BluetoothConnectionStatus, BluetoothLEDevice};
@@ -29,22 +29,21 @@ use windows::Guid;
 use anyhow::anyhow;
 use dashmap::DashMap;
 use futures::{stream, Stream, StreamExt};
-use log::{debug, info, trace, warn, error};
+use lazy_static::lazy_static;
+use log::{debug, error, info, trace, warn};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
-use lazy_static::lazy_static;
 
 use crate::characteristic::CharacteristicProperties;
 use crate::descriptor::Descriptor;
 use crate::service::Service;
 use crate::session::{BackendSession, Filter, Session, SessionConfig};
 use crate::winrt::bindings;
-use crate::{characteristic, peripheral, DescriptorHandle, try_u64_from_mac48_str};
+use crate::{characteristic, peripheral, try_u64_from_mac48_str, DescriptorHandle};
 use crate::{
-    fake, uuid::BluetoothUuid, winrt, AddressType, BackendPeripheralProperty, Error,
+    fake, uuid::BluetoothUuid, winrt, AddressType, BackendPeripheralProperty, Error, GattError,
     MacAddressType, Result,
-    GattError
 };
 use crate::{Address, MAC};
 use crate::{BackendEvent, CacheMode, CharacteristicHandle, PeripheralHandle, ServiceHandle};
@@ -61,24 +60,75 @@ pub(crate) struct WinrtSession {
 lazy_static! {
     static ref GATT_PROTOCOL_ERRORS: HashMap<u8, GattError> = {
         let mut map = HashMap::new();
-        map.insert(GattProtocolError::InsufficientAuthentication().unwrap(),  GattError::InsufficientAuthentication);
-        map.insert(GattProtocolError::InsufficientAuthorization().unwrap(),  GattError::InsufficientAuthorization);
-        map.insert(GattProtocolError::InsufficientEncryption().unwrap(),  GattError::InsufficientEncryption);
-        map.insert(GattProtocolError::ReadNotPermitted().unwrap(),  GattError::ReadNotPermitted);
-        map.insert(GattProtocolError::WriteNotPermitted().unwrap(),  GattError::WriteNotPermitted);
-        map.insert(GattProtocolError::RequestNotSupported().unwrap(),  GattError::Unsupported);
+        map.insert(
+            GattProtocolError::InsufficientAuthentication().unwrap(),
+            GattError::InsufficientAuthentication,
+        );
+        map.insert(
+            GattProtocolError::InsufficientAuthorization().unwrap(),
+            GattError::InsufficientAuthorization,
+        );
+        map.insert(
+            GattProtocolError::InsufficientEncryption().unwrap(),
+            GattError::InsufficientEncryption,
+        );
+        map.insert(
+            GattProtocolError::ReadNotPermitted().unwrap(),
+            GattError::ReadNotPermitted,
+        );
+        map.insert(
+            GattProtocolError::WriteNotPermitted().unwrap(),
+            GattError::WriteNotPermitted,
+        );
+        map.insert(
+            GattProtocolError::RequestNotSupported().unwrap(),
+            GattError::Unsupported,
+        );
 
-        map.insert(GattProtocolError::AttributeNotFound().unwrap(),  GattError::GeneralFailure("AttributeNotFound".to_string()));
-        map.insert(GattProtocolError::AttributeNotLong().unwrap(),  GattError::GeneralFailure("AttributeNotLong".to_string()));
-        map.insert(GattProtocolError::InsufficientEncryptionKeySize().unwrap(),  GattError::GeneralFailure("InsufficientEncryptionKeySize".to_string()));
-        map.insert(GattProtocolError::InsufficientResources().unwrap(),  GattError::GeneralFailure("InsufficientResources".to_string()));
-        map.insert(GattProtocolError::InvalidAttributeValueLength().unwrap(),  GattError::GeneralFailure("InvalidAttributeValueLength".to_string()));
-        map.insert(GattProtocolError::InvalidHandle().unwrap(),  GattError::GeneralFailure("InvalidHandle".to_string()));
-        map.insert(GattProtocolError::InvalidOffset().unwrap(),  GattError::GeneralFailure("InvalidOffset".to_string()));
-        map.insert(GattProtocolError::InvalidPdu().unwrap(),  GattError::GeneralFailure("InvalidPdu".to_string()));
-        map.insert(GattProtocolError::PrepareQueueFull().unwrap(),  GattError::GeneralFailure("PrepareQueueFull".to_string()));
-        map.insert(GattProtocolError::UnlikelyError().unwrap(),  GattError::GeneralFailure("UnlikelyError".to_string()));
-        map.insert(GattProtocolError::UnsupportedGroupType().unwrap(),  GattError::GeneralFailure("UnsupportedGroupType".to_string()));
+        map.insert(
+            GattProtocolError::AttributeNotFound().unwrap(),
+            GattError::GeneralFailure("AttributeNotFound".to_string()),
+        );
+        map.insert(
+            GattProtocolError::AttributeNotLong().unwrap(),
+            GattError::GeneralFailure("AttributeNotLong".to_string()),
+        );
+        map.insert(
+            GattProtocolError::InsufficientEncryptionKeySize().unwrap(),
+            GattError::GeneralFailure("InsufficientEncryptionKeySize".to_string()),
+        );
+        map.insert(
+            GattProtocolError::InsufficientResources().unwrap(),
+            GattError::GeneralFailure("InsufficientResources".to_string()),
+        );
+        map.insert(
+            GattProtocolError::InvalidAttributeValueLength().unwrap(),
+            GattError::GeneralFailure("InvalidAttributeValueLength".to_string()),
+        );
+        map.insert(
+            GattProtocolError::InvalidHandle().unwrap(),
+            GattError::GeneralFailure("InvalidHandle".to_string()),
+        );
+        map.insert(
+            GattProtocolError::InvalidOffset().unwrap(),
+            GattError::GeneralFailure("InvalidOffset".to_string()),
+        );
+        map.insert(
+            GattProtocolError::InvalidPdu().unwrap(),
+            GattError::GeneralFailure("InvalidPdu".to_string()),
+        );
+        map.insert(
+            GattProtocolError::PrepareQueueFull().unwrap(),
+            GattError::GeneralFailure("PrepareQueueFull".to_string()),
+        );
+        map.insert(
+            GattProtocolError::UnlikelyError().unwrap(),
+            GattError::GeneralFailure("UnlikelyError".to_string()),
+        );
+        map.insert(
+            GattProtocolError::UnsupportedGroupType().unwrap(),
+            GattError::GeneralFailure("UnsupportedGroupType".to_string()),
+        );
 
         map
     };
@@ -105,7 +155,6 @@ struct WinrtPeripheralInner {
     // Only used when an application explicitly connects to the peripheral...
     ble_device: Option<BluetoothLEDevice>,
     //connection_status_handler: Option<EventRegistrationToken>,
-
     gatt_session: Option<GattSession>,
     gatt_session_status: GattSessionStatus,
     gatt_session_status_handler: Option<EventRegistrationToken>,
@@ -133,7 +182,6 @@ struct WinrtPeripheralInner {
 }
 
 impl WinrtPeripheralInner {
-
     /*
     fn remove_status_changed_handler(&mut self) {
         if let Some(device) = &self.ble_device {
@@ -164,11 +212,14 @@ impl WinrtPeripheralInner {
         if let Some(device) = &self.ble_device {
             if let Some(ref gatt_session) = self.gatt_session {
                 match gatt_session.RemoveSessionStatusChanged(&self.gatt_session_status_handler) {
-                Ok(()) => {
+                    Ok(()) => {
                         trace!("Drop: removed GattSession status change handler");
                     }
                     Err(err) => {
-                        log::error!("Failed to remove GattSession status change handler: {:?}", err);
+                        log::error!(
+                            "Failed to remove GattSession status change handler: {:?}",
+                            err
+                        );
                     }
                 }
                 let _ = gatt_session.SetMaintainConnection(false);
@@ -382,15 +433,16 @@ impl WinrtSession {
         }
 
         if let Ok(services) = advertisement.ServiceUuids() {
-            let uuids: Vec<Uuid> = services.into_iter()
-                                           .filter_map(|guid| {
-                                               if let Ok(uuid) = Uuid::try_from_guid(&guid) {
-                                                   Some(uuid)
-                                               } else {
-                                                   None
-                                               }
-                                           })
-                                           .collect();
+            let uuids: Vec<Uuid> = services
+                .into_iter()
+                .filter_map(|guid| {
+                    if let Ok(uuid) = Uuid::try_from_guid(&guid) {
+                        Some(uuid)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
 
             if !uuids.is_empty() {
                 let _ = backend_bus.send(BackendEvent::PeripheralPropertySet {
@@ -421,31 +473,34 @@ impl WinrtSession {
         }
     }
 
-    fn winrt_peripheral_from_handle(&self, peripheral_handle: PeripheralHandle)
-                                    -> Result<WinrtPeripheral> {
+    fn winrt_peripheral_from_handle(
+        &self, peripheral_handle: PeripheralHandle,
+    ) -> Result<WinrtPeripheral> {
         match self.inner.peripherals_by_handle.get(&peripheral_handle) {
             Some(p) => Ok(p.clone()),
             None => {
-                log::error!("Spurious request with unknown peripheral handle {:?}",
-                            peripheral_handle);
+                log::error!(
+                    "Spurious request with unknown peripheral handle {:?}",
+                    peripheral_handle
+                );
                 Err(Error::InvalidStateReference)
             }
         }
     }
 
-    fn check_gatt_communication_status(&self,
-                                       status: std::result::Result<GattCommunicationStatus,
-                                                           windows::Error>,
-                                       protocol_error: std::result::Result<IReference<u8>,
-                                                           windows::Error>)
-                                       -> Result<()> {
+    fn check_gatt_communication_status(
+        &self, status: std::result::Result<GattCommunicationStatus, windows::Error>,
+        protocol_error: std::result::Result<IReference<u8>, windows::Error>,
+    ) -> Result<()> {
         let status = status?;
         match status {
             GattCommunicationStatus::AccessDenied => Err(Error::PeripheralAccessDenied),
             GattCommunicationStatus::ProtocolError => {
                 let protocol_error = protocol_error?.Value()?;
-                let gatt_error = GATT_PROTOCOL_ERRORS.get(&protocol_error)
-                    .map_or(GattError::GeneralFailure(format!("{protocol_error}")), |v| v.clone());
+                let gatt_error = GATT_PROTOCOL_ERRORS.get(&protocol_error).map_or(
+                    GattError::GeneralFailure(format!("{protocol_error}")),
+                    |v| v.clone(),
+                );
                 Err(Error::PeripheralGattProtocolError(gatt_error.clone()))
             }
             GattCommunicationStatus::Unreachable => Err(Error::PeripheralUnreachable),
@@ -460,12 +515,16 @@ impl WinrtSession {
     // NB: The WinRT docs explicitly clarify that passing `Cached` to `GetGattServicesAsync`
     // as a cache mode "means try looking in the cache first and, if not there, then retrieve
     // from the device"
-    async fn get_gatt_services(&self, device: &BluetoothLEDevice, cache_mode: BluetoothCacheMode)
-                               -> Result<GattDeviceServicesResult> {
-        let gatt_service_result = device.GetGattServicesWithCacheModeAsync(cache_mode)?
-                                        .await?;
-        self.check_gatt_communication_status(gatt_service_result.Status(),
-                                             gatt_service_result.ProtocolError())?;
+    async fn get_gatt_services(
+        &self, device: &BluetoothLEDevice, cache_mode: BluetoothCacheMode,
+    ) -> Result<GattDeviceServicesResult> {
+        let gatt_service_result = device
+            .GetGattServicesWithCacheModeAsync(cache_mode)?
+            .await?;
+        self.check_gatt_communication_status(
+            gatt_service_result.Status(),
+            gatt_service_result.ProtocolError(),
+        )?;
         Ok(gatt_service_result)
     }
 
@@ -473,9 +532,13 @@ impl WinrtSession {
         trace!("notify_disconnect");
 
         self.peripheral_drop_gatt_state(peripheral_handle);
-        let _ = self.inner
-                    .backend_bus
-                    .send(BackendEvent::PeripheralDisconnected { peripheral_handle, error: None });
+        let _ = self
+            .inner
+            .backend_bus
+            .send(BackendEvent::PeripheralDisconnected {
+                peripheral_handle,
+                error: None,
+            });
     }
 
     /*
@@ -510,12 +573,17 @@ impl WinrtSession {
         Ok(())
     }*/
 
-    fn on_session_status_change(&self, status: GattSessionStatus,
-                                peripheral_handle: PeripheralHandle) -> Result<()> {
+    fn on_session_status_change(
+        &self, status: GattSessionStatus, peripheral_handle: PeripheralHandle,
+    ) -> Result<()> {
         let winrt_peripheral = self.winrt_peripheral_from_handle(peripheral_handle)?;
         let prev_status = winrt_peripheral.inner.write().unwrap().gatt_session_status;
 
-        trace!("GattSessionStatusChanged: {:?} (prev status = {:?}", status,  prev_status);
+        trace!(
+            "GattSessionStatusChanged: {:?} (prev status = {:?}",
+            status,
+            prev_status
+        );
         // Can get redundant notifications
         if status == prev_status {
             debug!("Ignoring GattSessionStatusChanged (unchanged)");
@@ -527,21 +595,32 @@ impl WinrtSession {
 
         match status {
             GattSessionStatus::Active => {
-                trace!("Peripheral ({:?}/{}) Gatt Session is Active", peripheral_handle, peripheral_address_debug);
-                let _ = self.inner
-                            .backend_bus
-                            .send(BackendEvent::PeripheralConnected { peripheral_handle });
-            },
+                trace!(
+                    "Peripheral ({:?}/{}) Gatt Session is Active",
+                    peripheral_handle,
+                    peripheral_address_debug
+                );
+                let _ = self
+                    .inner
+                    .backend_bus
+                    .send(BackendEvent::PeripheralConnected { peripheral_handle });
+            }
             GattSessionStatus::Closed => {
-                trace!("Peripheral ({:?}/{}) Gatt Session is Closed", peripheral_handle, peripheral_address_debug);
+                trace!(
+                    "Peripheral ({:?}/{}) Gatt Session is Closed",
+                    peripheral_handle,
+                    peripheral_address_debug
+                );
 
                 self.notify_disconnect(peripheral_handle);
-            },
+            }
             status => {
-                log::error!("Spurious bluetooth connection status: {:?}: handle={:?}/{}",
-                            status,
-                            peripheral_handle,
-                            peripheral_address_debug);
+                log::error!(
+                    "Spurious bluetooth connection status: {:?}: handle={:?}/{}",
+                    status,
+                    peripheral_handle,
+                    peripheral_address_debug
+                );
             }
         }
 
@@ -648,15 +727,12 @@ impl WinrtSession {
             .await
     }*/
 
-    fn get_ble_device(&self, winrt_peripheral: &WinrtPeripheral) -> Result<BluetoothLEDevice>
-    {
+    fn get_ble_device(&self, winrt_peripheral: &WinrtPeripheral) -> Result<BluetoothLEDevice> {
         debug!("get_ble_device");
 
         let state_guard = winrt_peripheral.inner.read().unwrap();
         match state_guard.ble_device {
-            Some(ref ble_device) => {
-                Ok(ble_device.clone())
-            },
+            Some(ref ble_device) => Ok(ble_device.clone()),
             None => {
                 // Would likely represent an internal bug, since we shouldn't be dealing with
                 // requests that need a BleDevice if we are disconnected
@@ -666,9 +742,9 @@ impl WinrtSession {
         }
     }
 
-    fn gatt_service_from_handle(&self, winrt_peripheral: &WinrtPeripheral,
-                                service_handle: ServiceHandle)
-                                -> Result<GattDeviceService> {
+    fn gatt_service_from_handle(
+        &self, winrt_peripheral: &WinrtPeripheral, service_handle: ServiceHandle,
+    ) -> Result<GattDeviceService> {
         // Only need a 'read' lock since the DashMap has interior mutability.
         let guard = winrt_peripheral.inner.read().unwrap();
 
@@ -682,9 +758,9 @@ impl WinrtSession {
         }
     }
 
-    fn gatt_characteristic_from_handle(&self, winrt_peripheral: &WinrtPeripheral,
-                                       characteristic_handle: CharacteristicHandle)
-                                       -> Result<GattCharacteristic> {
+    fn gatt_characteristic_from_handle(
+        &self, winrt_peripheral: &WinrtPeripheral, characteristic_handle: CharacteristicHandle,
+    ) -> Result<GattCharacteristic> {
         // Only need a 'read' lock since the DashMap has interior mutability.
         let guard = winrt_peripheral.inner.read().unwrap();
 
@@ -698,9 +774,9 @@ impl WinrtSession {
         }
     }
 
-    fn gatt_descriptor_from_handle(&self, winrt_peripheral: &WinrtPeripheral,
-                                   descriptor_handle: DescriptorHandle)
-                                   -> Result<GattDescriptor> {
+    fn gatt_descriptor_from_handle(
+        &self, winrt_peripheral: &WinrtPeripheral, descriptor_handle: DescriptorHandle,
+    ) -> Result<GattDescriptor> {
         // Only need a 'read' lock since the DashMap has interior mutability.
         let guard = winrt_peripheral.inner.read().unwrap();
 
@@ -714,9 +790,9 @@ impl WinrtSession {
         }
     }
 
-    fn index_services_result(&self, winrt_peripheral: &WinrtPeripheral,
-                             services_result: &GattDeviceServicesResult)
-                             -> Result<()> {
+    fn index_services_result(
+        &self, winrt_peripheral: &WinrtPeripheral, services_result: &GattDeviceServicesResult,
+    ) -> Result<()> {
         // Only need a 'read' lock since the DashMap has interior mutability.
         let guard = winrt_peripheral.inner.read().unwrap();
 
@@ -731,9 +807,10 @@ impl WinrtSession {
         Ok(())
     }
 
-    fn index_characteristics_result(&self, winrt_peripheral: &WinrtPeripheral,
-                                    characteristics_result: &GattCharacteristicsResult)
-                                    -> Result<()> {
+    fn index_characteristics_result(
+        &self, winrt_peripheral: &WinrtPeripheral,
+        characteristics_result: &GattCharacteristicsResult,
+    ) -> Result<()> {
         // Only need a 'read' lock since the DashMap has interior mutability.
         let guard = winrt_peripheral.inner.read().unwrap();
 
@@ -742,18 +819,21 @@ impl WinrtSession {
         for characteristic in characteristics {
             let attribute = characteristic.AttributeHandle()?;
             let characteristic_handle = CharacteristicHandle(attribute as u32);
-            let winrt_characteristic = WinrtCharacteristic { gatt_characteristic: characteristic,
-                                                             notifications_handler: None };
-            guard.gatt_characteristics
-                 .insert(characteristic_handle, winrt_characteristic);
+            let winrt_characteristic = WinrtCharacteristic {
+                gatt_characteristic: characteristic,
+                notifications_handler: None,
+            };
+            guard
+                .gatt_characteristics
+                .insert(characteristic_handle, winrt_characteristic);
         }
 
         Ok(())
     }
 
-    fn index_descriptors_result(&self, winrt_peripheral: &WinrtPeripheral,
-                                descriptors_result: &GattDescriptorsResult)
-                                -> Result<()> {
+    fn index_descriptors_result(
+        &self, winrt_peripheral: &WinrtPeripheral, descriptors_result: &GattDescriptorsResult,
+    ) -> Result<()> {
         // Only need a 'read' lock since the DashMap has interior mutability.
         let guard = winrt_peripheral.inner.read().unwrap();
 
@@ -762,8 +842,7 @@ impl WinrtSession {
         for descriptor in descriptors {
             let attribute = descriptor.AttributeHandle()?;
             let descriptor_handle = DescriptorHandle(attribute as u32);
-            guard.gatt_descriptors
-                 .insert(descriptor_handle, descriptor);
+            guard.gatt_descriptors.insert(descriptor_handle, descriptor);
         }
 
         Ok(())
@@ -813,17 +892,26 @@ impl BackendSession for WinrtSession {
     fn declare_peripheral(&self, address: Address, name: String) -> Result<PeripheralHandle> {
         let mac = match address {
             Address::MAC(MAC(mac)) => mac,
-            Address::String(address_str) => {
-                match try_u64_from_mac48_str(&address_str) {
-                    Some(mac) => mac,
-                    None => return Err(Error::Other(anyhow!("Unsupported device address format: {}", address_str)))
+            Address::String(address_str) => match try_u64_from_mac48_str(&address_str) {
+                Some(mac) => mac,
+                None => {
+                    return Err(Error::Other(anyhow!(
+                        "Unsupported device address format: {}",
+                        address_str
+                    )))
                 }
+            },
+            _ => {
+                return Err(Error::Other(anyhow!(
+                    "Unsupported device address format: {:?}",
+                    address
+                )))
             }
-            _ => return Err(Error::Other(anyhow!("Unsupported device address format: {:?}", address)))
         };
 
         let peripheral_handle = self.peripheral_from_mac(mac);
-        let _ = self.inner
+        let _ = self
+            .inner
             .backend_bus
             .send(BackendEvent::PeripheralPropertySet {
                 peripheral_handle,
@@ -878,8 +966,9 @@ impl BackendSession for WinrtSession {
             // Give the handler a weak reference to the session to avoid a ref cycle...
             let weak_session_inner = Arc::downgrade(&self.inner);
 
-            let session_status_handler =
-                TypedEventHandler::new(move |gatt_session: &Option<GattSession>, args: &Option<GattSessionStatusChangedEventArgs> | {
+            let session_status_handler = TypedEventHandler::new(
+                move |gatt_session: &Option<GattSession>,
+                      args: &Option<GattSessionStatusChangedEventArgs>| {
                     if let Some(gatt_session) = gatt_session {
                         if let Some(args) = args {
                             let winrt_session_inner = weak_session_inner.upgrade();
@@ -888,9 +977,9 @@ impl BackendSession for WinrtSession {
 
                                 match args.Status() {
                                     Ok(status) => {
-                                        if let Err(err) = winrt_session.on_session_status_change(
-                                            status, peripheral_handle
-                                        ) {
+                                        if let Err(err) = winrt_session
+                                            .on_session_status_change(status, peripheral_handle)
+                                        {
                                             log::error!("Error while handling connection status change callback: {:?}", err);
                                         }
                                     }
@@ -904,15 +993,18 @@ impl BackendSession for WinrtSession {
                     }
 
                     Ok(())
-                });
+                },
+            );
 
             {
                 let mut winrt_peripheral_guard = winrt_peripheral.inner.write().unwrap();
-                winrt_peripheral_guard.gatt_session_status_handler =
-                    Some(gatt_session.SessionStatusChanged(session_status_handler)
-                            .map_err(|_| {
-                                Error::Other(anyhow!("Could not add gatt session status handler"))
-                            })?);
+                winrt_peripheral_guard.gatt_session_status_handler = Some(
+                    gatt_session
+                        .SessionStatusChanged(session_status_handler)
+                        .map_err(|_| {
+                            Error::Other(anyhow!("Could not add gatt session status handler"))
+                        })?,
+                );
                 winrt_peripheral_guard.ble_device = Some(device.clone());
 
                 winrt_peripheral_guard.gatt_session = Some(gatt_session.clone());
@@ -925,7 +1017,6 @@ impl BackendSession for WinrtSession {
         }
 
         gatt_session.SetMaintainConnection(true)?;
-
 
         //let io_bus_tx = self.ensure_peripheral_watcher_and_connect_task(peripheral_handle).await?;
 
@@ -986,9 +1077,13 @@ impl BackendSession for WinrtSession {
         // Since we've closed the session then we won't get any callback for the peripheral
         // disconnecting, so we just optimistically inform the frontend that the
         // peripheral is disconnected
-        let _ = self.inner
-                    .backend_bus
-                    .send(BackendEvent::PeripheralDisconnected { peripheral_handle, error: None });
+        let _ = self
+            .inner
+            .backend_bus
+            .send(BackendEvent::PeripheralDisconnected {
+                peripheral_handle,
+                error: None,
+            });
         Ok(())
     }
 
@@ -1010,11 +1105,9 @@ impl BackendSession for WinrtSession {
         Err(Error::Unsupported)
     }
 
-    async fn peripheral_discover_gatt_services(&self,
-            peripheral_handle: PeripheralHandle,
-            of_interest_hint: Option<Vec<Uuid>>)
-            -> Result<()>
-    {
+    async fn peripheral_discover_gatt_services(
+        &self, peripheral_handle: PeripheralHandle, of_interest_hint: Option<Vec<Uuid>>,
+    ) -> Result<()> {
         debug!("winrt: peripheral_discover_gatt_services");
         let winrt_peripheral = self.winrt_peripheral_from_handle(peripheral_handle)?;
         //let device = self.ensure_device_with_connection_status_handler(&winrt_peripheral).await?;
@@ -1023,7 +1116,9 @@ impl BackendSession for WinrtSession {
         // Note in this case `Cached` "means try looking in the cache first and, if not there,
         // then retrieve from the device" - so it's valid to use for 'discovery' here in case
         // the services have not yet been queried.
-        let services_result = self.get_gatt_services(&device, BluetoothCacheMode::Cached).await?;
+        let services_result = self
+            .get_gatt_services(&device, BluetoothCacheMode::Cached)
+            .await?;
 
         self.index_services_result(&winrt_peripheral, &services_result)?;
 
@@ -1035,31 +1130,36 @@ impl BackendSession for WinrtSession {
             let attribute = service.AttributeHandle()?;
             let service_handle = ServiceHandle(attribute as u32);
             let uuid: Uuid = Uuid::try_from_guid(&service.Uuid()?)?;
-            let _ =
-                backend_bus.send(BackendEvent::GattService { peripheral_handle,
-                                                                      service_handle,
-                                                                      uuid });
+            let _ = backend_bus.send(BackendEvent::GattService {
+                peripheral_handle,
+                service_handle,
+                uuid,
+            });
         }
 
         debug!("winrt: notify gatt_services complete");
         // In this case we queried all the services for the device so we can
         // tell the frontend that it now knows about all of the peripheral's
         // primary services...
-        let _ = backend_bus
-            .send(BackendEvent::GattServicesComplete { peripheral_handle, error: None });
+        let _ = backend_bus.send(BackendEvent::GattServicesComplete {
+            peripheral_handle,
+            error: None,
+        });
 
         Ok(())
     }
 
-    async fn gatt_service_discover_includes(&self, peripheral_handle: PeripheralHandle,
-                                            service_handle: ServiceHandle)
-                                            -> Result<()> {
+    async fn gatt_service_discover_includes(
+        &self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle,
+    ) -> Result<()> {
         let winrt_peripheral = self.winrt_peripheral_from_handle(peripheral_handle)?;
         let gatt_service = self.gatt_service_from_handle(&winrt_peripheral, service_handle)?;
 
         let services_result = gatt_service.GetIncludedServicesAsync()?.await?;
-        self.check_gatt_communication_status(services_result.Status(),
-                                             services_result.ProtocolError())?;
+        self.check_gatt_communication_status(
+            services_result.Status(),
+            services_result.ProtocolError(),
+        )?;
 
         self.index_services_result(&winrt_peripheral, &services_result)?;
 
@@ -1082,25 +1182,26 @@ impl BackendSession for WinrtSession {
         // In this case we queried all the included services for the service so we can
         // tell the frontend that it now knows about all of the service's
         // included services...
-        let _ = backend_bus
-            .send(BackendEvent::GattIncludedServicesComplete {
-                peripheral_handle,
-                service_handle,
-                error: None
-            });
+        let _ = backend_bus.send(BackendEvent::GattIncludedServicesComplete {
+            peripheral_handle,
+            service_handle,
+            error: None,
+        });
 
         Ok(())
     }
 
-    async fn gatt_service_discover_characteristics(&self, peripheral_handle: PeripheralHandle,
-                                                   service_handle: ServiceHandle)
-                                                   -> Result<()> {
+    async fn gatt_service_discover_characteristics(
+        &self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle,
+    ) -> Result<()> {
         let winrt_peripheral = self.winrt_peripheral_from_handle(peripheral_handle)?;
         let gatt_service = self.gatt_service_from_handle(&winrt_peripheral, service_handle)?;
 
         let characteristics_result = gatt_service.GetCharacteristicsAsync()?.await?;
-        self.check_gatt_communication_status(characteristics_result.Status(),
-                                             characteristics_result.ProtocolError())?;
+        self.check_gatt_communication_status(
+            characteristics_result.Status(),
+            characteristics_result.ProtocolError(),
+        )?;
 
         self.index_characteristics_result(&winrt_peripheral, &characteristics_result)?;
 
@@ -1111,33 +1212,32 @@ impl BackendSession for WinrtSession {
             let attribute = characteristic.AttributeHandle()?;
             let characteristic_handle = CharacteristicHandle(attribute as u32);
             let uuid: Uuid = Uuid::try_from_guid(&characteristic.Uuid()?)?;
-            let properties = CharacteristicProperties::from(characteristic.CharacteristicProperties()?);
+            let properties =
+                CharacteristicProperties::from(characteristic.CharacteristicProperties()?);
             let _ = backend_bus.send(BackendEvent::GattCharacteristic {
                 peripheral_handle,
                 service_handle,
                 characteristic_handle,
                 uuid,
-                properties
+                properties,
             });
         }
 
         // In this case we queried all the characteristics for the service so we can
         // tell the frontend that it now knows about all of the service's
         // characteristics...
-        let _ = backend_bus
-            .send(BackendEvent::GattCharacteristicsComplete {
-                peripheral_handle,
-                service_handle,
-                error: None
-            });
+        let _ = backend_bus.send(BackendEvent::GattCharacteristicsComplete {
+            peripheral_handle,
+            service_handle,
+            error: None,
+        });
         Ok(())
     }
 
-    async fn gatt_characteristic_read(&self, peripheral_handle: PeripheralHandle,
-                                      service_handle: ServiceHandle,
-                                      characteristic_handle: CharacteristicHandle,
-                                      cache_mode: CacheMode)
-                                      -> Result<Vec<u8>> {
+    async fn gatt_characteristic_read(
+        &self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle, cache_mode: CacheMode,
+    ) -> Result<Vec<u8>> {
         let winrt_peripheral = self.winrt_peripheral_from_handle(peripheral_handle)?;
         let gatt_characteristic =
             self.gatt_characteristic_from_handle(&winrt_peripheral, characteristic_handle)?;
@@ -1145,19 +1245,20 @@ impl BackendSession for WinrtSession {
             CacheMode::Cached => BluetoothCacheMode::Cached,
             CacheMode::Uncached => BluetoothCacheMode::Uncached,
         };
-        let result = gatt_characteristic.ReadValueWithCacheModeAsync(cache_mode)?
-                                        .await?;
+        let result = gatt_characteristic
+            .ReadValueWithCacheModeAsync(cache_mode)?
+            .await?;
         self.check_gatt_communication_status(result.Status(), result.ProtocolError())?;
 
         let buf = Vec::<u8>::try_from(&result.Value()?)?;
         Ok(buf)
     }
 
-    async fn gatt_characteristic_write(&self, peripheral_handle: PeripheralHandle,
-                                       service_handle: ServiceHandle,
-                                       characteristic_handle: CharacteristicHandle,
-                                       write_type: characteristic::WriteType, data: &[u8])
-                                       -> Result<()> {
+    async fn gatt_characteristic_write(
+        &self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle, write_type: characteristic::WriteType,
+        data: &[u8],
+    ) -> Result<()> {
         let winrt_peripheral = self.winrt_peripheral_from_handle(peripheral_handle)?;
         let gatt_characteristic =
             self.gatt_characteristic_from_handle(&winrt_peripheral, characteristic_handle)?;
@@ -1169,8 +1270,8 @@ impl BackendSession for WinrtSession {
 
         let writer = DataWriter::new()?;
         writer.WriteBytes(data)?;
-        let fut = gatt_characteristic.WriteValueWithResultAndOptionAsync(writer.DetachBuffer()?,
-                                                                         write_option)?;
+        let fut = gatt_characteristic
+            .WriteValueWithResultAndOptionAsync(writer.DetachBuffer()?, write_option)?;
 
         // XXX: Rust _really_ needs to improve how it captures for generators, it's like before non-lexical lifetimes
         // where you have to do awkward rearrangements purely for the sake of spelling out to the compiler that what
@@ -1188,10 +1289,10 @@ impl BackendSession for WinrtSession {
         Ok(())
     }
 
-    async fn gatt_characteristic_subscribe(&self, peripheral_handle: PeripheralHandle,
-                                           service_handle: ServiceHandle,
-                                           characteristic_handle: CharacteristicHandle)
-                                           -> Result<()> {
+    async fn gatt_characteristic_subscribe(
+        &self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle,
+    ) -> Result<()> {
         let winrt_peripheral = self.winrt_peripheral_from_handle(peripheral_handle)?;
         let gatt_characteristic =
             self.gatt_characteristic_from_handle(&winrt_peripheral, characteristic_handle)?;
@@ -1217,7 +1318,8 @@ impl BackendSession for WinrtSession {
 
             // First make sure to remove any old handler...
             if winrt_characteristic.notifications_handler.is_some() {
-                gatt_characteristic.RemoveValueChanged(winrt_characteristic.notifications_handler)?;
+                gatt_characteristic
+                    .RemoveValueChanged(winrt_characteristic.notifications_handler)?;
                 winrt_characteristic.notifications_handler = None;
             }
 
@@ -1230,14 +1332,12 @@ impl BackendSession for WinrtSession {
                     if let Some(args) = args {
                         match Vec::<u8>::try_from(&args.CharacteristicValue()?) {
                             Ok(buf) => {
-                                let _ = backend_bus.send(
-                                    BackendEvent::GattCharacteristicNotify {
-                                        peripheral_handle,
-                                        service_handle,
-                                        characteristic_handle,
-                                        value: buf,
-                                    },
-                                );
+                                let _ = backend_bus.send(BackendEvent::GattCharacteristicNotify {
+                                    peripheral_handle,
+                                    service_handle,
+                                    characteristic_handle,
+                                    value: buf,
+                                });
                             }
                             Err(err) => {
                                 log::error!("Failed to convert notified characteristic value to Vec<u8>: {:?}", err);
@@ -1258,8 +1358,10 @@ impl BackendSession for WinrtSession {
         match fut.await {
             Ok(result) => {
                 self.check_gatt_communication_status(result.Status(), result.ProtocolError())?;
-                trace!("Subscribed to notifications for characteristic {:?}",
-                       gatt_characteristic.Uuid());
+                trace!(
+                    "Subscribed to notifications for characteristic {:?}",
+                    gatt_characteristic.Uuid()
+                );
             }
             Err(err) => {
                 if err.code() == RO_E_CLOSED {
@@ -1268,8 +1370,10 @@ impl BackendSession for WinrtSession {
                     // and since device disconnection happens asynchronously it's possible
                     // that this is the first we'll know of a disconnect happening
 
-                    warn!("Inferred disconnect from IO error for peripheral {:?}",
-                          peripheral_handle);
+                    warn!(
+                        "Inferred disconnect from IO error for peripheral {:?}",
+                        peripheral_handle
+                    );
                     self.notify_disconnect(peripheral_handle);
                 }
             }
@@ -1278,17 +1382,18 @@ impl BackendSession for WinrtSession {
         Ok(())
     }
 
-    async fn gatt_characteristic_unsubscribe(&self, peripheral_handle: PeripheralHandle,
-                                             _service_handle: ServiceHandle,
-                                             characteristic_handle: CharacteristicHandle)
-                                             -> Result<()> {
+    async fn gatt_characteristic_unsubscribe(
+        &self, peripheral_handle: PeripheralHandle, _service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle,
+    ) -> Result<()> {
         let winrt_peripheral = self.winrt_peripheral_from_handle(peripheral_handle)?;
 
         let gatt_characteristic = {
             let peripheral_guard = winrt_peripheral.inner.read().unwrap();
 
-            let winrt_characteristic = peripheral_guard.gatt_characteristics
-                                                       .get_mut(&characteristic_handle);
+            let winrt_characteristic = peripheral_guard
+                .gatt_characteristics
+                .get_mut(&characteristic_handle);
             let mut winrt_characteristic = match winrt_characteristic {
                 Some(winrt_characteristic) => winrt_characteristic,
                 None => {
@@ -1300,7 +1405,8 @@ impl BackendSession for WinrtSession {
             let gatt_characteristic = winrt_characteristic.gatt_characteristic.clone();
 
             if winrt_characteristic.notifications_handler.is_some() {
-                gatt_characteristic.RemoveValueChanged(winrt_characteristic.notifications_handler)?;
+                gatt_characteristic
+                    .RemoveValueChanged(winrt_characteristic.notifications_handler)?;
                 winrt_characteristic.notifications_handler = None;
             } else {
                 warn!("No value changed handler found when unsubscribing from characteristic notifications (not subscribed?)");
@@ -1315,8 +1421,10 @@ impl BackendSession for WinrtSession {
         match fut.await {
             Ok(result) => {
                 self.check_gatt_communication_status(result.Status(), result.ProtocolError())?;
-                trace!("Unsubscribed from notifications for characteristic {:?}",
-                       gatt_characteristic.Uuid());
+                trace!(
+                    "Unsubscribed from notifications for characteristic {:?}",
+                    gatt_characteristic.Uuid()
+                );
             }
             Err(err) => {
                 if err.code() == RO_E_CLOSED {
@@ -1325,8 +1433,10 @@ impl BackendSession for WinrtSession {
                     // and since device disconnection happens asynchronously it's possible
                     // that this is the first we'll know of a disconnect happening
 
-                    warn!("Inferred disconnect from IO error for peripheral {:?}",
-                          peripheral_handle);
+                    warn!(
+                        "Inferred disconnect from IO error for peripheral {:?}",
+                        peripheral_handle
+                    );
                     self.notify_disconnect(peripheral_handle);
                 }
             }
@@ -1335,17 +1445,20 @@ impl BackendSession for WinrtSession {
         Ok(())
     }
 
-    async fn gatt_characteristic_discover_descriptors(&self, peripheral_handle: PeripheralHandle,
-                                                      service_handle: ServiceHandle,
-                                                      characteristic_handle: CharacteristicHandle)
-                                                   -> Result<()> {
+    async fn gatt_characteristic_discover_descriptors(
+        &self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle,
+    ) -> Result<()> {
         let winrt_peripheral = self.winrt_peripheral_from_handle(peripheral_handle)?;
         let gatt_service = self.gatt_service_from_handle(&winrt_peripheral, service_handle)?;
-        let gatt_characteristic = self.gatt_characteristic_from_handle(&winrt_peripheral, characteristic_handle)?;
+        let gatt_characteristic =
+            self.gatt_characteristic_from_handle(&winrt_peripheral, characteristic_handle)?;
 
         let descriptors_result = gatt_characteristic.GetDescriptorsAsync()?.await?;
-        self.check_gatt_communication_status(descriptors_result.Status(),
-                                             descriptors_result.ProtocolError())?;
+        self.check_gatt_communication_status(
+            descriptors_result.Status(),
+            descriptors_result.ProtocolError(),
+        )?;
 
         self.index_descriptors_result(&winrt_peripheral, &descriptors_result)?;
 
@@ -1361,29 +1474,27 @@ impl BackendSession for WinrtSession {
                 service_handle,
                 characteristic_handle,
                 descriptor_handle,
-                uuid
+                uuid,
             });
         }
 
         // In this case we queried all the characteristics for the service so we can
         // tell the frontend that it now knows about all of the service's
         // characteristics...
-        let _ = backend_bus
-            .send(BackendEvent::GattDescriptorsComplete {
-                peripheral_handle,
-                service_handle,
-                characteristic_handle,
-                error: None
-            });
+        let _ = backend_bus.send(BackendEvent::GattDescriptorsComplete {
+            peripheral_handle,
+            service_handle,
+            characteristic_handle,
+            error: None,
+        });
         Ok(())
     }
 
-    async fn gatt_descriptor_read(&self, peripheral_handle: PeripheralHandle,
-                                  service_handle: ServiceHandle,
-                                  characteristic_handle: CharacteristicHandle,
-                                  descriptor_handle: DescriptorHandle,
-                                  cache_mode: CacheMode)
-                                  -> Result<Vec<u8>> {
+    async fn gatt_descriptor_read(
+        &self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle, descriptor_handle: DescriptorHandle,
+        cache_mode: CacheMode,
+    ) -> Result<Vec<u8>> {
         let winrt_peripheral = self.winrt_peripheral_from_handle(peripheral_handle)?;
         let gatt_descriptor =
             self.gatt_descriptor_from_handle(&winrt_peripheral, descriptor_handle)?;
@@ -1391,20 +1502,20 @@ impl BackendSession for WinrtSession {
             CacheMode::Cached => BluetoothCacheMode::Cached,
             CacheMode::Uncached => BluetoothCacheMode::Uncached,
         };
-        let result = gatt_descriptor.ReadValueWithCacheModeAsync(cache_mode)?
-                                        .await?;
+        let result = gatt_descriptor
+            .ReadValueWithCacheModeAsync(cache_mode)?
+            .await?;
         self.check_gatt_communication_status(result.Status(), result.ProtocolError())?;
 
         let buf = Vec::<u8>::try_from(&result.Value()?)?;
         Ok(buf)
     }
 
-    async fn gatt_descriptor_write(&self, peripheral_handle: PeripheralHandle,
-                                   service_handle: ServiceHandle,
-                                   characteristic_handle: CharacteristicHandle,
-                                   descriptor_handle: DescriptorHandle,
-                                   data: &[u8])
-                                   -> Result<()> {
+    async fn gatt_descriptor_write(
+        &self, peripheral_handle: PeripheralHandle, service_handle: ServiceHandle,
+        characteristic_handle: CharacteristicHandle, descriptor_handle: DescriptorHandle,
+        data: &[u8],
+    ) -> Result<()> {
         let winrt_peripheral = self.winrt_peripheral_from_handle(peripheral_handle)?;
         let gatt_descriptor =
             self.gatt_descriptor_from_handle(&winrt_peripheral, descriptor_handle)?;
@@ -1461,13 +1572,17 @@ impl From<windows::Error> for Error {
 impl From<GattCharacteristicProperties> for CharacteristicProperties {
     fn from(gatt_props: GattCharacteristicProperties) -> Self {
         let mut props = CharacteristicProperties::NONE;
-        if gatt_props & GattCharacteristicProperties::Broadcast != GattCharacteristicProperties::None {
+        if gatt_props & GattCharacteristicProperties::Broadcast
+            != GattCharacteristicProperties::None
+        {
             props |= CharacteristicProperties::BROADCAST;
         }
         if gatt_props & GattCharacteristicProperties::Read != GattCharacteristicProperties::None {
             props |= CharacteristicProperties::READ;
         }
-        if gatt_props & GattCharacteristicProperties::WriteWithoutResponse != GattCharacteristicProperties::None {
+        if gatt_props & GattCharacteristicProperties::WriteWithoutResponse
+            != GattCharacteristicProperties::None
+        {
             props |= CharacteristicProperties::WRITE_WITHOUT_RESPONSE;
         }
         if gatt_props & GattCharacteristicProperties::Write != GattCharacteristicProperties::None {
@@ -1476,19 +1591,28 @@ impl From<GattCharacteristicProperties> for CharacteristicProperties {
         if gatt_props & GattCharacteristicProperties::Notify != GattCharacteristicProperties::None {
             props |= CharacteristicProperties::NOTIFY;
         }
-        if gatt_props & GattCharacteristicProperties::Indicate != GattCharacteristicProperties::None {
+        if gatt_props & GattCharacteristicProperties::Indicate != GattCharacteristicProperties::None
+        {
             props |= CharacteristicProperties::INDICATE;
         }
-        if gatt_props & GattCharacteristicProperties::AuthenticatedSignedWrites != GattCharacteristicProperties::None {
+        if gatt_props & GattCharacteristicProperties::AuthenticatedSignedWrites
+            != GattCharacteristicProperties::None
+        {
             props |= CharacteristicProperties::AUTHENTICATED_SIGNED_WRITES;
         }
-        if gatt_props & GattCharacteristicProperties::ExtendedProperties != GattCharacteristicProperties::None {
+        if gatt_props & GattCharacteristicProperties::ExtendedProperties
+            != GattCharacteristicProperties::None
+        {
             props |= CharacteristicProperties::EXTENDED_PROPERTIES;
         }
-        if gatt_props & GattCharacteristicProperties::ReliableWrites != GattCharacteristicProperties::None {
+        if gatt_props & GattCharacteristicProperties::ReliableWrites
+            != GattCharacteristicProperties::None
+        {
             props |= CharacteristicProperties::RELIABLE_WRITES;
         }
-        if gatt_props & GattCharacteristicProperties::WritableAuxiliaries != GattCharacteristicProperties::None {
+        if gatt_props & GattCharacteristicProperties::WritableAuxiliaries
+            != GattCharacteristicProperties::None
+        {
             props |= CharacteristicProperties::WRITABLE_AUXILIARIES;
         }
 

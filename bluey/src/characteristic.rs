@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
 
-use log::{debug,trace};
+use bitflags::bitflags;
+use log::{debug, trace};
 use thiserror::Error;
 use uuid::Uuid;
-use bitflags::bitflags;
 
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
@@ -54,10 +54,14 @@ bitflags! {
     }
 }
 
-
 impl Characteristic {
-    pub(crate) fn wrap(peripheral: Peripheral, characteristic_handle: CharacteristicHandle) -> Self {
-        Self { peripheral, characteristic_handle }
+    pub(crate) fn wrap(
+        peripheral: Peripheral, characteristic_handle: CharacteristicHandle,
+    ) -> Self {
+        Self {
+            peripheral,
+            characteristic_handle,
+        }
     }
 
     fn get_characteristic_state(&self) -> Result<CharacteristicState> {
@@ -67,9 +71,8 @@ impl Characteristic {
 
         let peripheral_state_guard = peripheral_state.inner.read().unwrap();
 
-        let (characteristic_state, _) =
-            session.get_gatt_characteristic_state(&peripheral_state_guard,
-                                                  self.characteristic_handle)?;
+        let (characteristic_state, _) = session
+            .get_gatt_characteristic_state(&peripheral_state_guard, self.characteristic_handle)?;
 
         Ok(characteristic_state)
     }
@@ -95,9 +98,15 @@ impl Characteristic {
         let characteristic_state = self.get_characteristic_state()?;
         let service_handle = characteristic_state.inner.read().unwrap().service;
 
-        session.backend_api()
-               .gatt_characteristic_read(peripheral_handle, service_handle, self.characteristic_handle, cache_mode)
-               .await
+        session
+            .backend_api()
+            .gatt_characteristic_read(
+                peripheral_handle,
+                service_handle,
+                self.characteristic_handle,
+                cache_mode,
+            )
+            .await
     }
 
     pub async fn write_value(&self, write_type: WriteType, data: &[u8]) -> Result<()> {
@@ -107,13 +116,16 @@ impl Characteristic {
         let characteristic_state = self.get_characteristic_state()?;
         let service_handle = characteristic_state.inner.read().unwrap().service;
 
-        session.backend_api()
-               .gatt_characteristic_write(peripheral_handle,
-                                          service_handle,
-                                          self.characteristic_handle,
-                                          write_type,
-                                          data)
-               .await
+        session
+            .backend_api()
+            .gatt_characteristic_write(
+                peripheral_handle,
+                service_handle,
+                self.characteristic_handle,
+                write_type,
+                data,
+            )
+            .await
     }
 
     pub async fn subscribe(&self) -> Result<()> {
@@ -125,11 +137,14 @@ impl Characteristic {
         let characteristic_state = self.get_characteristic_state()?;
         let service_handle = characteristic_state.inner.read().unwrap().service;
 
-        session.backend_api()
-               .gatt_characteristic_subscribe(peripheral_handle,
-                                              service_handle,
-                                              self.characteristic_handle)
-               .await
+        session
+            .backend_api()
+            .gatt_characteristic_subscribe(
+                peripheral_handle,
+                service_handle,
+                self.characteristic_handle,
+            )
+            .await
     }
 
     pub async fn unsubscribe(&self) -> Result<()> {
@@ -141,11 +156,14 @@ impl Characteristic {
         let characteristic_state = self.get_characteristic_state()?;
         let service_handle = characteristic_state.inner.read().unwrap().service;
 
-        session.backend_api()
-               .gatt_characteristic_unsubscribe(peripheral_handle,
-                                                service_handle,
-                                                self.characteristic_handle)
-               .await
+        session
+            .backend_api()
+            .gatt_characteristic_unsubscribe(
+                peripheral_handle,
+                service_handle,
+                self.characteristic_handle,
+            )
+            .await
     }
 
     pub async fn discover_descriptors(&self) -> Result<()> {
@@ -156,11 +174,14 @@ impl Characteristic {
         let service_handle = characteristic_state.inner.read().unwrap().service;
 
         debug!("discover_descriptors() calling catt_characteristic_discover_descriptors");
-        session.backend_api()
-               .gatt_characteristic_discover_descriptors(self.peripheral.peripheral_handle,
-                                                         service_handle,
-                                                         self.characteristic_handle)
-               .await?;
+        session
+            .backend_api()
+            .gatt_characteristic_discover_descriptors(
+                self.peripheral.peripheral_handle,
+                service_handle,
+                self.characteristic_handle,
+            )
+            .await?;
         Ok(())
     }
 
@@ -169,10 +190,11 @@ impl Characteristic {
 
         let service_state_guard = characteristic_state.inner.read().unwrap();
 
-        Ok(service_state_guard.descriptors
-                              .iter()
-                              .map(|handle| Descriptor::wrap(self.peripheral.clone(), *handle))
-                              .collect())
+        Ok(service_state_guard
+            .descriptors
+            .iter()
+            .map(|handle| Descriptor::wrap(self.peripheral.clone(), *handle))
+            .collect())
     }
 }
 
@@ -182,4 +204,3 @@ pub enum WriteType {
     WithResponse,
     WithoutResponse,
 }
-

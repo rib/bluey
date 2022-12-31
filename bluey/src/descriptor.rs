@@ -10,11 +10,12 @@ use uuid::Uuid;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::characteristic::{Characteristic, self};
+use crate::characteristic::{self, Characteristic};
 use crate::peripheral::Peripheral;
-use crate::session::{DescriptorState, Session, CharacteristicState};
+use crate::session::{CharacteristicState, DescriptorState, Session};
 use crate::{
-    fake, Address, CacheMode, DescriptorHandle, Error, MacAddressType, Result, Service, MAC, CharacteristicHandle,
+    fake, Address, CacheMode, CharacteristicHandle, DescriptorHandle, Error, MacAddressType,
+    Result, Service, MAC,
 };
 
 // For the public API a Descriptor is just a thin wrapper over a
@@ -46,10 +47,15 @@ pub struct Descriptor {
 
 impl Descriptor {
     pub(crate) fn wrap(peripheral: Peripheral, descriptor_handle: DescriptorHandle) -> Self {
-        Self { peripheral, descriptor_handle }
+        Self {
+            peripheral,
+            descriptor_handle,
+        }
     }
 
-    fn get_descriptor_state(&self) -> Result<(DescriptorState, CharacteristicState, CharacteristicHandle)> {
+    fn get_descriptor_state(
+        &self,
+    ) -> Result<(DescriptorState, CharacteristicState, CharacteristicHandle)> {
         let session = &self.peripheral.session;
         let peripheral_handle = self.peripheral.peripheral_handle;
         let peripheral_state = session.get_peripheral_state(peripheral_handle);
@@ -57,15 +63,17 @@ impl Descriptor {
         let peripheral_state_guard = peripheral_state.inner.read().unwrap();
 
         let (descriptor_state, _) =
-            session.get_gatt_descriptor_state(&peripheral_state_guard,
-                                              self.descriptor_handle)?;
+            session.get_gatt_descriptor_state(&peripheral_state_guard, self.descriptor_handle)?;
 
         let characteristic_handle = descriptor_state.inner.read().unwrap().characteristic;
-        let (characteristic_state, _) =
-            session.get_gatt_characteristic_state(&peripheral_state_guard,
-                                                  characteristic_handle)?;
+        let (characteristic_state, _) = session
+            .get_gatt_characteristic_state(&peripheral_state_guard, characteristic_handle)?;
 
-        Ok((descriptor_state, characteristic_state, characteristic_handle))
+        Ok((
+            descriptor_state,
+            characteristic_state,
+            characteristic_handle,
+        ))
     }
 
     pub fn uuid(&self) -> Result<Uuid> {
@@ -79,28 +87,40 @@ impl Descriptor {
         let session = &self.peripheral.session;
         let peripheral_handle = self.peripheral.peripheral_handle;
 
-        let (descriptor_state, characteristic_state, characteristic_handle) = self.get_descriptor_state()?;
+        let (descriptor_state, characteristic_state, characteristic_handle) =
+            self.get_descriptor_state()?;
         let service_handle = characteristic_state.inner.read().unwrap().service;
 
-        session.backend_api()
-               .gatt_descriptor_read(peripheral_handle, service_handle, characteristic_handle, self.descriptor_handle, cache_mode)
-               .await
+        session
+            .backend_api()
+            .gatt_descriptor_read(
+                peripheral_handle,
+                service_handle,
+                characteristic_handle,
+                self.descriptor_handle,
+                cache_mode,
+            )
+            .await
     }
 
     pub async fn write_value(&self, write_type: WriteType, data: &[u8]) -> Result<()> {
         let session = &self.peripheral.session;
         let peripheral_handle = self.peripheral.peripheral_handle;
 
-        let (descriptor_state, characteristic_state, characteristic_handle) = self.get_descriptor_state()?;
+        let (descriptor_state, characteristic_state, characteristic_handle) =
+            self.get_descriptor_state()?;
         let service_handle = characteristic_state.inner.read().unwrap().service;
 
-        session.backend_api()
-               .gatt_descriptor_write(peripheral_handle,
-                                      service_handle,
-                                      characteristic_handle,
-                                      self.descriptor_handle,
-                                      data)
-               .await
+        session
+            .backend_api()
+            .gatt_descriptor_write(
+                peripheral_handle,
+                service_handle,
+                characteristic_handle,
+                self.descriptor_handle,
+                data,
+            )
+            .await
     }
 }
 

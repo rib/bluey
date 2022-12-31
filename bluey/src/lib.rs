@@ -49,9 +49,11 @@ pub struct MAC(u64);
 impl fmt::Display for MAC {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let bytes = u64::to_le_bytes(self.0);
-        write!(f,
-               "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
-               bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5])
+        write!(
+            f,
+            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+        )
     }
 }
 
@@ -157,7 +159,6 @@ pub enum AddressType {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct PeripheralHandle(u32);
-
 
 #[derive(Clone, Debug)]
 enum BackendPeripheralProperty {
@@ -265,11 +266,11 @@ pub(crate) enum BackendEvent {
     },
     PeripheralConnectionFailed {
         peripheral_handle: PeripheralHandle,
-        error: Option<GattError>
+        error: Option<GattError>,
     },
     PeripheralDisconnected {
         peripheral_handle: PeripheralHandle,
-        error: Option<GattError>
+        error: Option<GattError>,
     },
     GattService {
         peripheral_handle: PeripheralHandle,
@@ -278,7 +279,7 @@ pub(crate) enum BackendEvent {
     },
     GattServicesComplete {
         peripheral_handle: PeripheralHandle,
-        error: Option<GattError>
+        error: Option<GattError>,
     },
     GattIncludedService {
         peripheral_handle: PeripheralHandle,
@@ -289,19 +290,19 @@ pub(crate) enum BackendEvent {
     GattIncludedServicesComplete {
         peripheral_handle: PeripheralHandle,
         service_handle: ServiceHandle,
-        error: Option<GattError>
+        error: Option<GattError>,
     },
     GattCharacteristic {
         peripheral_handle: PeripheralHandle,
         service_handle: ServiceHandle,
         characteristic_handle: CharacteristicHandle,
         uuid: Uuid,
-        properties: CharacteristicProperties
+        properties: CharacteristicProperties,
     },
     GattCharacteristicsComplete {
         peripheral_handle: PeripheralHandle,
         service_handle: ServiceHandle,
-        error: Option<GattError>
+        error: Option<GattError>,
     },
     GattCharacteristicWriteNotify {
         peripheral_handle: PeripheralHandle,
@@ -325,7 +326,7 @@ pub(crate) enum BackendEvent {
         peripheral_handle: PeripheralHandle,
         service_handle: ServiceHandle,
         characteristic_handle: CharacteristicHandle,
-        error: Option<GattError>
+        error: Option<GattError>,
     },
     GattDescriptorWriteNotify {
         peripheral_handle: PeripheralHandle,
@@ -361,7 +362,7 @@ pub enum Event {
     #[non_exhaustive]
     PeripheralFailedToConnect {
         peripheral: Peripheral,
-        error: Option<GattError>
+        error: Option<GattError>,
     },
 
     /// Indicates that a peripheral has disconnected.
@@ -373,7 +374,7 @@ pub enum Event {
     #[non_exhaustive]
     PeripheralDisconnected {
         peripheral: Peripheral,
-        error: Option<GattError>
+        error: Option<GattError>,
     },
     #[non_exhaustive]
     PeripheralPropertyChanged {

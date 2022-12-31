@@ -42,7 +42,7 @@ impl Drop for PeripheralInner {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Peripheral {
-    pub(crate) inner: Arc<PeripheralInner>
+    pub(crate) inner: Arc<PeripheralInner>,
 }
 
 impl Deref for Peripheral {
@@ -55,11 +55,13 @@ impl Deref for Peripheral {
 
 #[derive(Debug)]
 pub(crate) struct WeakPeripheral {
-    pub(crate) inner: Weak<PeripheralInner>
+    pub(crate) inner: Weak<PeripheralInner>,
 }
 impl WeakPeripheral {
     pub(crate) fn upgrade(&self) -> Option<Peripheral> {
-        self.inner.upgrade().map(|strong_inner| Peripheral { inner: strong_inner})
+        self.inner.upgrade().map(|strong_inner| Peripheral {
+            inner: strong_inner,
+        })
     }
 }
 
@@ -68,35 +70,35 @@ impl fmt::Debug for Peripheral {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let addr_string = match peripheral_state.inner.try_read() {
             Ok(inner) => {
-                let address = inner.address
-                                   .as_ref()
-                                   .unwrap_or(&Address::MAC(MAC(0)))
-                                   .clone();
+                let address = inner
+                    .address
+                    .as_ref()
+                    .unwrap_or(&Address::MAC(MAC(0)))
+                    .clone();
                 address.to_string()
             }
             Err(_) => "<locked>".to_string(),
         };
         f.debug_struct("Peripheral")
-         .field("address", &addr_string)
-         .field("handle", &self.peripheral_handle)
-         .finish()
+            .field("address", &addr_string)
+            .field("handle", &self.peripheral_handle)
+            .finish()
     }
 }
 
 impl Peripheral {
-
     pub(crate) fn new(session: Session, peripheral_handle: PeripheralHandle) -> Self {
         Peripheral {
             inner: Arc::new(PeripheralInner {
                 session,
-                peripheral_handle
-            })
+                peripheral_handle,
+            }),
         }
     }
 
     pub(crate) fn downgrade(&self) -> WeakPeripheral {
         let weak_inner = Arc::downgrade(&self.inner);
-        WeakPeripheral { inner: weak_inner}
+        WeakPeripheral { inner: weak_inner }
     }
 
     pub(crate) fn check_connected(&self) -> Result<()> {
@@ -145,7 +147,8 @@ impl Peripheral {
     pub async fn disconnect(&self) -> Result<()> {
         self.session
             .backend_api()
-            .peripheral_disconnect(self.peripheral_handle).await
+            .peripheral_disconnect(self.peripheral_handle)
+            .await
     }
 
     pub fn address(&self) -> Address {
@@ -153,10 +156,11 @@ impl Peripheral {
         let state_guard = peripheral_state.inner.read().unwrap();
         // NB: we wait until we have an address before a peripheral is advertised
         // to the application so we shouldn't ever report an address of 0 here...
-        state_guard.address
-                   .as_ref()
-                   .unwrap_or(&Address::MAC(MAC(0)))
-                   .clone()
+        state_guard
+            .address
+            .as_ref()
+            .unwrap_or(&Address::MAC(MAC(0)))
+            .clone()
     }
 
     pub fn address_type(&self) -> Option<MacAddressType> {
@@ -204,7 +208,8 @@ impl Peripheral {
     /// got via scanning on Windows.
     pub async fn read_rssi(&self) -> Result<i16> {
         self.check_connected()?;
-        let rssi = self.session
+        let rssi = self
+            .session
             .backend_api()
             .peripheral_read_rssi(self.peripheral_handle)
             .await?;
@@ -286,7 +291,10 @@ impl Peripheral {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
 
-        state_guard.gatt_services_by_uuid.get(&uuid).map(|r| Service::wrap(self.clone(), *r))
+        state_guard
+            .gatt_services_by_uuid
+            .get(&uuid)
+            .map(|r| Service::wrap(self.clone(), *r))
     }
 
     /// Fetch all the services that have been discovered for this `Peripheral`
@@ -299,10 +307,11 @@ impl Peripheral {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
 
-        state_guard.gatt_services
-                   .iter()
-                   .map(|kv| Service::wrap(self.clone(), *kv.key()))
-                   .collect()
+        state_guard
+            .gatt_services
+            .iter()
+            .map(|kv| Service::wrap(self.clone(), *kv.key()))
+            .collect()
     }
 
     /// Fetch all the primary services that have been discovered for this `Peripheral`
@@ -313,26 +322,33 @@ impl Peripheral {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
 
-        state_guard.gatt_primary_services
-                   .iter()
-                   .map(|handle| Service::wrap(self.clone(), *handle))
-                   .collect()
+        state_guard
+            .gatt_primary_services
+            .iter()
+            .map(|handle| Service::wrap(self.clone(), *handle))
+            .collect()
     }
 
     pub fn service_data(&self, id: Uuid) -> Option<Vec<u8>> {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
-        state_guard.service_data.get(&id).map(|data| data.to_owned())
+        state_guard
+            .service_data
+            .get(&id)
+            .map(|data| data.to_owned())
     }
 
     pub fn all_service_data(&self) -> Option<HashMap<Uuid, Vec<u8>>> {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
         if !state_guard.service_data.is_empty() {
-            Some(state_guard.service_data
-                            .iter()
-                            .map(|(uuid, data)| (*uuid, data.to_owned()))
-                            .collect())
+            Some(
+                state_guard
+                    .service_data
+                    .iter()
+                    .map(|(uuid, data)| (*uuid, data.to_owned()))
+                    .collect(),
+            )
         } else {
             None
         }
@@ -341,17 +357,23 @@ impl Peripheral {
     pub fn manufacturer_data(&self, id: u16) -> Option<Vec<u8>> {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
-        state_guard.manufacturer_data.get(&id).map(|data| data.to_owned())
+        state_guard
+            .manufacturer_data
+            .get(&id)
+            .map(|data| data.to_owned())
     }
 
     pub fn all_manufacturer_data(&self) -> Option<HashMap<u16, Vec<u8>>> {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
         if !state_guard.manufacturer_data.is_empty() {
-            Some(state_guard.manufacturer_data
-                            .iter()
-                            .map(|(id, data)| (*id, data.to_owned()))
-                            .collect())
+            Some(
+                state_guard
+                    .manufacturer_data
+                    .iter()
+                    .map(|(id, data)| (*id, data.to_owned()))
+                    .collect(),
+            )
         } else {
             None
         }

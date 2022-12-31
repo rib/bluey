@@ -1,4 +1,4 @@
-#![cfg(not(target_os="android"))]
+#![cfg(not(target_os = "android"))]
 
 use bluey;
 use bluey::session;
@@ -22,10 +22,11 @@ enum Event {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::builder().filter_level(log::LevelFilter::Warn) // Default Log Level
-                         .parse_default_env()
-                         .format(pretty_env_logger::formatter)
-                         .init();
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Warn) // Default Log Level
+        .parse_default_env()
+        .format(pretty_env_logger::formatter)
+        .init();
 
     let session = session::SessionConfig::new().start().await?;
     let events = session.events()?;
@@ -37,9 +38,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ctrl_c_stream: Pin<Box<dyn Stream<Item = Event>>> =
         Box::pin(signal::ctrl_c().into_stream().map(|_| {
-                                                   println!("Ctrl-C");
-                                                   Event::Interrupt
-                                               }));
+            println!("Ctrl-C");
+            Event::Interrupt
+        }));
     mainloop.insert(EventSource::Interrupt, ctrl_c_stream);
 
     let bt_event_stream: Pin<Box<dyn Stream<Item = Event>>> =
@@ -49,18 +50,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some((_, event)) = mainloop.next().await {
         match event {
             Event::BtEvent(event) => match event {
-                bluey::Event::PeripheralFound { peripheral: _,
-                                              name,
-                                              address,
-                                              .. } => {
+                bluey::Event::PeripheralFound {
+                    peripheral: _,
+                    name,
+                    address,
+                    ..
+                } => {
                     println!("Peripheral Found: {}: {}", name, address);
                 }
-                bluey::Event::PeripheralPropertyChanged { peripheral,
-                                                        property_id,
-                                                        .. } => {
-                    println!("Peripheral Property Changed: {}: {:?}",
-                             peripheral.address(),
-                             property_id);
+                bluey::Event::PeripheralPropertyChanged {
+                    peripheral,
+                    property_id,
+                    ..
+                } => {
+                    println!(
+                        "Peripheral Property Changed: {}: {:?}",
+                        peripheral.address(),
+                        property_id
+                    );
                 }
                 _ => {
                     println!("Other Event: {:?}", &event);
