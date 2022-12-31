@@ -79,7 +79,7 @@ macro_rules! call_primitive_method_with_exception_check {
 
 pub fn try_call_bool_method(env: jni::JNIEnv, obj: JObject, method_id: JMethodID, args: &[jni::sys::jvalue]) -> Result<bool> {
     match call_primitive_method_with_exception_check!(env, obj, method_id, Boolean, Bool, args) {
-        Ok(status) => Ok(if status == jni::sys::JNI_TRUE { true } else { false }),
+        Ok(status) => Ok(status == jni::sys::JNI_TRUE),
         Err(err) => Err(err)
     }
 }
@@ -98,9 +98,9 @@ pub fn try_call_float_method(env: jni::JNIEnv, obj: JObject, method_id: JMethodI
 
 pub fn try_call_void_method(env: jni::JNIEnv, obj: JObject, method_id: JMethodID, args: &[jni::sys::jvalue]) -> Result<()> {
     if let JValue::Void = catch_jni_exception!(env, env.call_method_unchecked(obj, method_id, jni::signature::ReturnType::Primitive(jni::signature::Primitive::Void), args))? {
-        return Ok(());
+        Ok(())
     } else {
-        return Err(Error::Other(anyhow!("JNI: unexpected return type")))
+        Err(Error::Other(anyhow!("JNI: unexpected return type")))
     }
 }
 
@@ -115,18 +115,18 @@ pub fn try_call_string_method(env: jni::JNIEnv, obj: JObject, method_id: JMethod
             let lossy_s = js.to_string_lossy().to_string();
             Error::Other(anyhow!("JNI: invalid utf8 for returned String: {:?}, lossy = {}", err, lossy_s))
         })?;
-        return Ok(Some(s.to_string()));
+        Ok(Some(s.to_string()))
     } else {
-        return Err(Error::Other(anyhow!("JNI: unexpected return type")))
+        Err(Error::Other(anyhow!("JNI: unexpected return type")))
     }
 }
 
 pub fn try_call_object_method<'a>(env: jni::JNIEnv<'a>, obj: JObject<'a>, method_id: JMethodID, args: &[jni::sys::jvalue]) -> Result<JObject<'a>> {
     // XXX: Wow, it's pretty terrible that any function call that returns an object requires allocating a String for the JavaType...
     if let JValue::Object(obj) = catch_jni_exception!(env, env.call_method_unchecked(obj, method_id, jni::signature::ReturnType::Object, args))? {
-        return Ok(obj);
+        Ok(obj)
     } else {
-        return Err(Error::Other(anyhow!("JNI: unexpected return type")))
+        Err(Error::Other(anyhow!("JNI: unexpected return type")))
     }
 }
 
@@ -156,15 +156,15 @@ impl<T: ?Sized + Sync> Default for JHandle<T> {
     }
 }
 
-impl<T: ?Sized + Sync> Into<jni::sys::jlong> for JHandle<T> {
-    fn into(self) -> jni::sys::jlong {
-        self.handle
+impl<T: ?Sized + Sync> From<JHandle<T>> for jni::sys::jlong {
+    fn from(handle: JHandle<T>) -> Self {
+        handle.handle
     }
 }
 
-impl<'a, T: ?Sized + Sync> Into<JValue<'a>> for JHandle<T> {
-    fn into(self) -> JValue<'a> {
-        JValue::Long(self.handle)
+impl<'a, T: ?Sized + Sync> From<JHandle<T>> for JValue<'a> {
+    fn from(handle: JHandle<T>) -> Self {
+        JValue::Long(handle.handle)
     }
 }
 

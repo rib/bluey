@@ -59,12 +59,7 @@ pub(crate) struct WeakPeripheral {
 }
 impl WeakPeripheral {
     pub(crate) fn upgrade(&self) -> Option<Peripheral> {
-        match self.inner.upgrade() {
-            Some(strong_inner) => {
-                Some(Peripheral { inner: strong_inner})
-            },
-            None => None
-        }
+        self.inner.upgrade().map(|strong_inner| Peripheral { inner: strong_inner})
     }
 }
 
@@ -237,7 +232,7 @@ impl Peripheral {
     pub fn service_ids(&self) -> Vec<Uuid> {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
-        state_guard.service_ids.iter().map(|uuid| *uuid).collect()
+        state_guard.service_ids.iter().copied().collect()
     }
 
     /// Queries all the available services for the peripheral.
@@ -327,10 +322,7 @@ impl Peripheral {
     pub fn service_data(&self, id: Uuid) -> Option<Vec<u8>> {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
-        match state_guard.service_data.get(&id) {
-            Some(data) => Some(data.to_owned()),
-            None => None,
-        }
+        state_guard.service_data.get(&id).map(|data| data.to_owned())
     }
 
     pub fn all_service_data(&self) -> Option<HashMap<Uuid, Vec<u8>>> {
@@ -349,10 +341,7 @@ impl Peripheral {
     pub fn manufacturer_data(&self, id: u16) -> Option<Vec<u8>> {
         let peripheral_state = self.session.get_peripheral_state(self.peripheral_handle);
         let state_guard = peripheral_state.inner.read().unwrap();
-        match state_guard.manufacturer_data.get(&id) {
-            Some(data) => Some(data.to_owned()),
-            None => None,
-        }
+        state_guard.manufacturer_data.get(&id).map(|data| data.to_owned())
     }
 
     pub fn all_manufacturer_data(&self) -> Option<HashMap<u16, Vec<u8>>> {

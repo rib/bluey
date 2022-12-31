@@ -54,9 +54,9 @@ use crate::characteristic::{WriteType, CharacteristicProperties};
 
 static REGISTER_NATIVE_METHODS: Once = Once::new();
 
-const BLE_SESSION_CLASS_NAME: &'static str = "co.bluey.BleSession";
-const BLE_DEVICE_CLASS_NAME: &'static str = "co.bluey.BleDevice";
-const BLE_DEVICE_JNI_TYPE: &'static str = "Lco/bluey/BleDevice;";
+const BLE_SESSION_CLASS_NAME: &str = "co.bluey.BleSession";
+const BLE_DEVICE_CLASS_NAME: &str = "co.bluey.BleDevice";
+const BLE_DEVICE_JNI_TYPE: &str = "Lco/bluey/BleDevice;";
 
 impl From<jni::errors::Error> for Error {
     fn from(jerr: jni::errors::Error) -> Self {
@@ -97,15 +97,15 @@ impl From<AndroidGattStatus> for Option<GattError> {
     }
 }
 
-impl Into<jni::sys::jvalue> for PeripheralHandle {
-    fn into(self) -> jni::sys::jvalue {
-        jni::sys::jvalue { j: self.0 as i64 }
+impl From<PeripheralHandle> for jni::sys::jvalue {
+    fn from(handle: PeripheralHandle) -> Self {
+        jni::sys::jvalue { j: handle.0 as i64 }
     }
 }
 
-impl Into<jvalue> for WriteType {
-    fn into(self) -> jvalue {
-        match self {
+impl From<WriteType> for jvalue {
+    fn from(write_type: WriteType) -> Self {
+        match write_type {
             WriteType::WithoutResponse => { jvalue { i: 1 }},
             WriteType::WithResponse => { jvalue { i: 2 }},
             //WriteType::Signed => { jvalue { i: 4 }},
@@ -161,12 +161,11 @@ impl IntoJHandle for AndroidSession {
 
         let weak = Weak::from_raw(inner_ptr);
 
-        let ret = match (&weak).upgrade() {
+        let ret = match weak.upgrade() {
             Some(arc) => {
                 let session = Self {
                     inner: arc,
                 };
-                //debug!("refs within clone_from_weak_handle, after Arc::from_raw(): strong = {}, weak = {}", Arc::strong_count(&session.inner), Arc::weak_count(&session.inner));
                 Some(session)
             }
             None => None
@@ -175,13 +174,7 @@ impl IntoJHandle for AndroidSession {
 
         // Convert back into a ptr since we don't want the weak reference to be dropped yet...
         let _inner_ptr = weak.into_raw();
-
-        if let Some(session) = ret {
-            //debug!("refs within clone_from_weak_handle, after weak.into_raw(): strong = {}, weak = {}", Arc::strong_count(&session.inner), Arc::weak_count(&session.inner));
-            Some(session)
-        } else {
-            None
-        }
+        ret
     }
 
     unsafe fn drop_weak_handle(handle: JHandle<Self>) {
@@ -666,7 +659,7 @@ impl BleSessionNative {
                     .get_string(address)?;
                 let address_str = address_str
                     .to_str().map_err(|err| { Error::Other(anyhow!("JNI: invalid utf8 for returned String: {:?}", err))})?;
-                let mac = match try_u64_from_mac48_str(&address_str) {
+                let mac = match try_u64_from_mac48_str(address_str) {
                     Some(mac) => mac,
                     None => return Err(Error::Other(anyhow!("Spurious device address format: {}", address_str)))
                 };
@@ -1260,7 +1253,7 @@ impl AndroidSession {
                 match state.pending {
                     Some(IOCmd::RequestConnect { .. }) => {
                         match status {
-                            AndroidGattStatus::Success if connected == true => {
+                            AndroidGattStatus::Success if connected => {
                                 // If Android says the device is in the process of bonding after notifying
                                 // us of a connect then we want to delay any follow up requests, such
                                 // as service discovery until the bonding is complete...
@@ -1422,7 +1415,7 @@ impl AndroidSession {
             IOCmd::CharacteristicNotify { service_handle, characteristic_handle, value } => {
                 let _ = session
                     .backend_bus
-                    .send(BackendEvent::GattCharacteristicNotify { peripheral_handle, service_handle, characteristic_handle, value: value.clone() } );
+                    .send(BackendEvent::GattCharacteristicNotify { peripheral_handle, service_handle, characteristic_handle, value } );
 
                 Ok(())
             }
@@ -1586,7 +1579,7 @@ impl AndroidSession {
                         .backend_bus
                         .send(BackendEvent::PeripheralConnectionFailed {
                             peripheral_handle,
-                            error: Some(GattError::GeneralFailure(format!("Failed to initiate connection request")))
+                            error: Some(GattError::GeneralFailure("Failed to initiate connection request".to_string()))
                         });
                 }
 
@@ -1603,7 +1596,7 @@ impl AndroidSession {
                         .backend_bus
                         .send(BackendEvent::PeripheralPropertySet {
                             peripheral_handle,
-                            property: BackendPeripheralProperty::Name(name.to_string()),
+                            property: BackendPeripheralProperty::Name(name),
                         });
                 }
 
@@ -1943,7 +1936,7 @@ impl AndroidSession {
                     Some(request) = cmd_stream.next() => {
                         match request {
                             IOCmd::ConnectionStatusNotify { connected, status } => {
-                                if connected == false {
+                                if !connected {
                                     let error = Option::<GattError>::from(status);
                                     session.notify_disconnect(peripheral_handle, error);
                                 } else {
@@ -2543,7 +2536,7 @@ fn notify_io_callback_from_jni<F>(
 
 #[async_trait]
 impl BackendSession for AndroidSession {
-    async fn start_scanning(&self, filter: &Filter) -> Result<()> {
+    fn start_scanning(&self, filter: &Filter) -> Result<()> {
         debug!("BLE: backend: start_scanning");
         let jenv = self.jvm.get_env()?;
         let ble_session = self.jsession.as_obj();
@@ -2562,7 +2555,7 @@ impl BackendSession for AndroidSession {
         Ok(())
     }
 
-    async fn stop_scanning(&self) -> Result<()> {
+    fn stop_scanning(&self) -> Result<()> {
         debug!("BLE: backend: stop_scanning");
         let jenv = self.jvm.get_env()?;
         let ble_session = self.jsession.as_obj();
@@ -2601,7 +2594,7 @@ impl BackendSession for AndroidSession {
             .backend_bus
             .send(BackendEvent::PeripheralPropertySet {
                 peripheral_handle,
-                property: BackendPeripheralProperty::Name(name.to_string()),
+                property: BackendPeripheralProperty::Name(name),
             });
         Ok(peripheral_handle)
     }

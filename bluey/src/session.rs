@@ -58,6 +58,7 @@ impl Deref for Session {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 #[tokio::test]
 async fn session_eq() {
     let session0 = SessionConfig::new().start().await.unwrap();
@@ -114,8 +115,8 @@ pub struct SessionInner {
 // track those relationshipts itself)
 #[async_trait]
 pub(crate) trait BackendSession {
-    async fn start_scanning(&self, filter: &Filter) -> Result<()>;
-    async fn stop_scanning(&self) -> Result<()>;
+    fn start_scanning(&self, filter: &Filter) -> Result<()>;
+    fn stop_scanning(&self) -> Result<()>;
 
     fn declare_peripheral(&self, address: Address, name: String) -> Result<PeripheralHandle>;
 
@@ -423,6 +424,12 @@ impl Filter {
     }
 }
 
+impl Default for Filter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /*
 Note: the initial scanning API supported ref-counting subscriptions to
 scan and returned a ScanSubscription that would drop the ref count when
@@ -546,7 +553,7 @@ impl Session {
         Self { inner }
     }
 
-    async fn start<'a>(config: SessionConfig<'a>) -> Result<Self> {
+    async fn start(config: SessionConfig<'_>) -> Result<Self> {
         let (broadcast_sender, _) = broadcast::channel(16);
 
         // Each per-backend backend is responsible for feeding the backend event bus
@@ -557,24 +564,24 @@ impl Session {
             #[cfg(target_os = "windows")]
             Backend::SystemDefault => {
                 let implementation =
-                    winrt::session::WinrtSession::new(&config, backend_bus_tx.clone())?;
+                    winrt::session::WinrtSession::new(&config, backend_bus_tx)?;
                 BackendSessionImpl::Winrt(implementation)
             }
             #[cfg(target_os = "android")]
             Backend::SystemDefault => {
                 let implementation =
-                    android::session::AndroidSession::new(&config, backend_bus_tx.clone())?;
+                    android::session::AndroidSession::new(&config, backend_bus_tx)?;
                 BackendSessionImpl::Android(implementation)
             }
             #[cfg(target_arch = "wasm32")]
             Backend::SystemDefault => {
                 let implementation =
-                    fake::session::FakeSession::new(&config, backend_bus_tx.clone())?;
+                    fake::session::FakeSession::new(&config, backend_bus_tx)?;
                 BackendSessionImpl::Fake(implementation)
             }
             Backend::Fake => {
                 let implementation =
-                    fake::session::FakeSession::new(&config, backend_bus_tx.clone())?;
+                    fake::session::FakeSession::new(&config, backend_bus_tx)?;
                 BackendSessionImpl::Fake(implementation)
             }
         };
@@ -762,7 +769,7 @@ impl Session {
         let peripheral_state = self.get_peripheral_state(peripheral_handle);
         let mut state_guard = peripheral_state.write().unwrap();
 
-        if state_guard.is_connected != true {
+        if !state_guard.is_connected {
             trace!("PeripheralConnected: handle={}/{}",
                    peripheral_handle.0,
                    state_guard.address
@@ -809,7 +816,7 @@ impl Session {
         // if it has multiple orthogonal indicators of a disconnect happening (e.g. explicit
         // disconnect callback from OS vs observed IO failure) so we try to normalize this for
         // the application...
-        if state_guard.is_connected != false {
+        if state_guard.is_connected {
             state_guard.is_connected = false;
 
             trace!("Notifying peripheral {} disconnected",
@@ -933,11 +940,10 @@ impl Session {
 
         // We wait until we have and address and a name before advertising peripherals
         // to applications...
-        if state_guard.advertised == false
-           && state_guard.name != None
-           && state_guard.address != None
+        if !state_guard.advertised
+           && state_guard.name.is_some()
+           && state_guard.address.is_some()
         {
-            let peripheral = self.get_application_peripheral(peripheral_handle);
             let _ =
                 self.event_bus
                     .send(Event::PeripheralFound { peripheral: peripheral.clone(),
@@ -1009,7 +1015,7 @@ impl Session {
         if let Some(changed_prop) = changed_prop {
             trace!("Notifying property {:?} changed", changed_prop);
             let _ = self.event_bus.send(Event::PeripheralPropertyChanged {
-                peripheral: peripheral.clone(),
+                peripheral,
                 property_id: changed_prop,
             });
         }
@@ -1526,8 +1532,8 @@ impl Session {
     pub fn events(&self) -> Result<impl Stream<Item = Event>> {
         let receiver = self.event_bus.subscribe();
         Ok(BroadcastStream::new(receiver).filter_map(|x| async move {
-                                             if x.is_ok() {
-                                                 Some(x.unwrap())
+                                             if let Ok(x) = x {
+                                                 Some(x)
                                              } else {
                                                  None
                                              }
@@ -1574,7 +1580,7 @@ impl Session {
             return Err(Error::Other(anyhow!("Already scanning")));
         }
 
-        self.inner.backend.api().start_scanning(&filter).await?;
+        self.inner.backend.api().start_scanning(&filter)?;
         *is_scanning_guard = true;
 
         Ok(())
@@ -1586,7 +1592,7 @@ impl Session {
             return Err(Error::Other(anyhow!("Not currently scanning")));
         }
 
-        self.backend.api().stop_scanning().await?;
+        self.backend.api().stop_scanning()?;
         *is_scanning_guard = false;
 
         Ok(())
