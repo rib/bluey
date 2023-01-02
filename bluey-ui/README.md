@@ -18,7 +18,7 @@ export ANDROID_NDK_HOME="path/to/ndk"
 rustup target add aarch64-linux-android
 cargo install cargo-ndk
 
-cargo ndk -t arm64-v8a -o app/src/main/jniLibs/  build
+cargo ndk -t aarch64-linux-android -o app/src/main/jniLibs/  build
 ./gradlew build
 ./gradlew installDebug
 ```
