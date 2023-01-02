@@ -9,3 +9,6 @@ members = [
 exclude = [
     "bluey-ui"
 ]
+
+[patch.crates-io]
+jni = { git = "https://github.com/argv-minus-one/jni-rs.git", branch = "safe-refs" }

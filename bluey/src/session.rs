@@ -458,9 +458,9 @@ pub enum Backend {
 }
 
 #[cfg(target_os = "android")]
-pub struct AndroidConfig<'a> {
-    pub jni_env: jni::JNIEnv<'a>,
-    pub activity: jni::objects::JObject<'a>,
+pub struct AndroidConfig<'local> {
+    pub jni_env: jni::JNIEnv<'local>,
+    pub activity: jni::objects::JObject<'local>,
     pub companion_chooser_request_code: Option<u32>,
     //lifetime: PhantomData<&'a ()>,
 }
@@ -548,7 +548,7 @@ impl Session {
         Self { inner }
     }
 
-    async fn start(config: SessionConfig<'_>) -> Result<Self> {
+    async fn start(mut config: SessionConfig<'_>) -> Result<Self> {
         let (broadcast_sender, _) = broadcast::channel(16);
 
         // Each per-backend backend is responsible for feeding the backend event bus
@@ -564,7 +564,7 @@ impl Session {
             #[cfg(target_os = "android")]
             Backend::SystemDefault => {
                 let implementation =
-                    android::session::AndroidSession::new(&config, backend_bus_tx)?;
+                    android::session::AndroidSession::new(&mut config, backend_bus_tx)?;
                 BackendSessionImpl::Android(implementation)
             }
             #[cfg(target_arch = "wasm32")]
