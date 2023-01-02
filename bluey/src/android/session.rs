@@ -287,9 +287,9 @@ impl Drop for AndroidSessionInner {
         if let Ok(mut jenv) = self.jvm.get_env() {
             try_call_void_method(
                 &mut jenv,
-                self.jsession.as_obj(),
+                &self.jsession,
                 self.set_native_handle_method,
-                &[jni::objects::JValue::Long(0).to_jni()],
+                &[jni::objects::JValue::Long(0).as_jni()],
             );
             debug!("Explicitly detached native handle from BleSession");
         }
@@ -691,9 +691,9 @@ impl BleSessionNative {
 
                     if let Some(local_name) = try_call_string_method(
                         &mut env,
-                        session.jsession.as_obj(),
+                        &session.jsession,
                         session.scan_result_get_local_name_method,
-                        &[JValue::Object(&scan_result).to_jni()],
+                        &[JValue::Object(&scan_result).as_jni()],
                     )? {
                         let _ = session
                             .backend_bus
@@ -704,9 +704,9 @@ impl BleSessionNative {
                     }
                     let tx_power = try_call_int_method(
                         &mut env,
-                        session.jsession.as_obj(),
+                        &session.jsession,
                         session.scan_result_get_tx_power_method,
-                        &[JValue::Object(&scan_result).to_jni()],
+                        &[JValue::Object(&scan_result).as_jni()],
                     )?;
                     let _ = session
                         .backend_bus
@@ -716,9 +716,9 @@ impl BleSessionNative {
                         });
                     let rssi = try_call_int_method(
                         &mut env,
-                        session.jsession.as_obj(),
+                        &session.jsession,
                         session.scan_result_get_rssi_method,
-                        &[JValue::Object(&scan_result).to_jni()],
+                        &[JValue::Object(&scan_result).as_jni()],
                     )?;
                     let _ = session
                         .backend_bus
@@ -729,20 +729,20 @@ impl BleSessionNative {
 
                     let n_service_uuids = try_call_int_method(
                         &mut env,
-                        session.jsession.as_obj(),
+                        &session.jsession,
                         session.scan_result_get_service_uuids_count_method,
-                        &[JValue::Object(&scan_result).to_jni()],
+                        &[JValue::Object(&scan_result).as_jni()],
                     )?;
                     if n_service_uuids > 0 {
                         let mut service_uuids = vec![];
                         for i in 0..n_service_uuids {
                             if let Some(service_uuid) = try_call_string_method(
                                 &mut env,
-                                session.jsession.as_obj(),
+                                &session.jsession,
                                 session.scan_result_get_nth_service_uuid_method,
                                 &[
-                                    JValue::Object(&scan_result).to_jni(),
-                                    JValue::Int(i).to_jni(),
+                                    JValue::Object(&scan_result).as_jni(),
+                                    JValue::Int(i).as_jni(),
                                 ],
                             )? {
                                 if let Ok(uuid) = Uuid::parse_str(&service_uuid) {
@@ -763,29 +763,29 @@ impl BleSessionNative {
 
                     let n = try_call_int_method(
                         &mut env,
-                        session.jsession.as_obj(),
+                        &session.jsession,
                         session.scan_result_get_specific_manufacturer_data_count_method,
-                        &[JValue::Object(&scan_result).to_jni()],
+                        &[JValue::Object(&scan_result).as_jni()],
                     )?;
                     if n > 0 {
                         let mut data_map = HashMap::new();
                         for i in 0..n {
                             let manfacturer_id = try_call_int_method(
                                 &mut env,
-                                session.jsession.as_obj(),
+                                &session.jsession,
                                 session.scan_result_get_specific_manufacturer_data_id_method,
                                 &[
-                                    JValue::Object(&scan_result).to_jni(),
-                                    JValue::Int(i).to_jni(),
+                                    JValue::Object(&scan_result).as_jni(),
+                                    JValue::Int(i).as_jni(),
                                 ],
                             )? as u16;
                             let data = try_call_object_method(
                                 &mut env,
-                                session.jsession.as_obj(),
+                                &session.jsession,
                                 session.scan_result_get_specific_manufacturer_data_method,
                                 &[
-                                    JValue::Object(&scan_result).to_jni(),
-                                    JValue::Int(i).to_jni(),
+                                    JValue::Object(&scan_result).as_jni(),
+                                    JValue::Int(i).as_jni(),
                                 ],
                             )?;
                             if !data.is_null() {
@@ -1163,7 +1163,7 @@ impl AndroidSession {
             &mut env,
             &loader,
             load_class_method,
-            &[JValue::Object(&ble_session_class_name).to_jni()],
+            &[JValue::Object(&ble_session_class_name).as_jni()],
         )?
         .into();
 
@@ -1182,7 +1182,7 @@ impl AndroidSession {
             &mut env,
             &loader,
             load_class_method,
-            &[JValue::Object(&ble_device_class_name).to_jni()],
+            &[JValue::Object(&ble_device_class_name).as_jni()],
         )?
         .into();
 
@@ -1531,7 +1531,7 @@ impl AndroidSession {
             &mut env,
             &jsession,
             session.set_native_handle_method,
-            &[weak_handle.to_jni()],
+            &[weak_handle.as_jni()],
         )?;
 
         trace!(
@@ -1657,8 +1657,8 @@ impl AndroidSession {
                                 // us of a connect then we want to delay any follow up requests, such
                                 // as service discovery until the bonding is complete...
                                 trace!("Querying device bond state");
-                                let bond_state = try_call_int_method(&mut jenv, session.jsession.as_obj(), session.get_device_bond_state_method,
-                                                                &[JValue::Object(ble_device.as_obj()).to_jni()])?;
+                                let bond_state = try_call_int_method(&mut jenv, &session.jsession, session.get_device_bond_state_method,
+                                                                &[JValue::Object(&ble_device).as_jni()])?;
                                 let bond_state = AndroidBondState::from(bond_state);
                                 trace!("Bonding state after connection = {:?}", bond_state);
                                 state.waiting_for_bond = matches!(bond_state, AndroidBondState::Bonding);
@@ -1752,8 +1752,8 @@ impl AndroidSession {
 
                         let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
 
-                        let services = try_call_object_method(&mut jenv, session.jsession.as_obj(), session.get_device_services_method,
-                                                                    &[JValue::Object(ble_device.as_obj()).to_jni()])?;
+                        let services = try_call_object_method(&mut jenv, &session.jsession, session.get_device_services_method,
+                                                                    &[JValue::Object(&ble_device).as_jni()])?;
                         let services: JList = JList::from_env(&mut jenv, &services)?;
 
                         session.index_services_list(&android_peripheral, &services)?;
@@ -1956,10 +1956,10 @@ impl AndroidSession {
 
                 let try_result = || -> Result<()> { // try {
                     trace!("IO Task: requesting device connect...");
-                    try_call_void_method(&mut jenv, session.jsession.as_obj(), session.connect_device_gatt_method,
-                        &[JValue::Object(ble_device.as_obj()).to_jni(),
+                    try_call_void_method(&mut jenv, &session.jsession, session.connect_device_gatt_method,
+                        &[JValue::Object(&ble_device).as_jni(),
                                 peripheral_handle.into(),
-                                JValue::Bool(1).to_jni() /* autoconnect=true */])?;
+                                JValue::Bool(1).as_jni() /* autoconnect=true */])?;
                         //JValue::Long(android_peripheral.peripheral_handle.0 as jlong)])?;
 
                     {
@@ -1985,8 +1985,8 @@ impl AndroidSession {
                 // on a saved Address so this might be the first point where we learn
                 // the device's name...
                 trace!("IO Task: querying device name...");
-                let name = try_call_string_method(&mut jenv, session.jsession.as_obj(), session.get_device_name_method,
-                                                                &[JValue::Object(ble_device.as_obj()).to_jni()])?;
+                let name = try_call_string_method(&mut jenv, &session.jsession, session.get_device_name_method,
+                                                                &[JValue::Object(&ble_device).as_jni()])?;
                 if let Some(name) = name {
                     debug!("IO Task: got device name = {}", &name);
                     let _ = session
@@ -2003,8 +2003,8 @@ impl AndroidSession {
             },
 
             IOCmd::ReadRSSI { .. } => {
-                if !try_call_bool_method(&mut jenv, session.jsession.as_obj(), session.read_device_rssi_method,
-                                    &[JValue::Object(ble_device.as_obj()).to_jni()])?
+                if !try_call_bool_method(&mut jenv, &session.jsession, session.read_device_rssi_method,
+                                    &[JValue::Object(&ble_device).as_jni()])?
                 {
                     return Err(Error::Other(anyhow!("Failed to initiate RSSI read")));
                 }
@@ -2017,8 +2017,8 @@ impl AndroidSession {
             },
 
             IOCmd::RequestDiscoverServices { } => {
-                if !try_call_bool_method(&mut jenv, session.jsession.as_obj(), session.discover_device_services_method,
-                    &[JValue::Object(ble_device.as_obj()).to_jni()])?
+                if !try_call_bool_method(&mut jenv, &session.jsession, session.discover_device_services_method,
+                    &[JValue::Object(&ble_device).as_jni()])?
                 {
                     return Err(Error::Other(anyhow!("Failed to initiate services discovery")));
                 }
@@ -2032,9 +2032,9 @@ impl AndroidSession {
                 let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
                 let jcharacteristic = session.gatt_characteristic_from_handle(&android_peripheral, characteristic_handle)?;
 
-                if !try_call_bool_method(&mut jenv, session.jsession.as_obj(), session.characteristic_read_method,
-                                         &[JValue::Object(ble_device.as_obj()).to_jni(),
-                                                JValue::Object(jcharacteristic.as_obj()).to_jni()])?
+                if !try_call_bool_method(&mut jenv, &session.jsession, session.characteristic_read_method,
+                                         &[JValue::Object(&ble_device).as_jni(),
+                                                JValue::Object(&jcharacteristic).as_jni()])?
                 {
                     return Err(Error::Other(anyhow!("Failed to initiate characteristic read")));
                 }
@@ -2051,9 +2051,9 @@ impl AndroidSession {
                 let jcharacteristic = session.gatt_characteristic_from_handle(&android_peripheral, characteristic_handle)?;
 
                 let value_bytes = jenv.byte_array_from_slice(&value)?;
-                if !try_call_bool_method(&mut jenv, session.jsession.as_obj(), session.characteristic_write_method,
-                                         &[JValue::Object(ble_device.as_obj()).to_jni(),
-                                                 JValue::Object(jcharacteristic.as_obj()).to_jni(),
+                if !try_call_bool_method(&mut jenv, &session.jsession, session.characteristic_write_method,
+                                         &[JValue::Object(&ble_device).as_jni(),
+                                                 JValue::Object(&jcharacteristic).as_jni(),
                                                  jvalue { l: value_bytes },
                                                  write_type.into()])?
                 {
@@ -2071,9 +2071,9 @@ impl AndroidSession {
             IOCmd::RequestSubscribeCharacteristic { characteristic_handle } => {
                 let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
                 let jcharacteristic = session.gatt_characteristic_from_handle(&android_peripheral, characteristic_handle)?;
-                if !try_call_bool_method(&mut jenv, session.jsession.as_obj(), session.characteristic_subscribe_method,
-                                         &[JValue::Object(ble_device.as_obj()).to_jni(),
-                                                 JValue::Object(jcharacteristic.as_obj()).to_jni()])? {
+                if !try_call_bool_method(&mut jenv, &session.jsession, session.characteristic_subscribe_method,
+                                         &[JValue::Object(&ble_device).as_jni(),
+                                                 JValue::Object(&jcharacteristic).as_jni()])? {
                     return Err(Error::Other(anyhow!("Failed to initiate subscription to characteristic")));
                 }
 
@@ -2085,9 +2085,9 @@ impl AndroidSession {
             IOCmd::RequestUnsubscribeCharacteristic { characteristic_handle } => {
                 let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
                 let jcharacteristic = session.gatt_characteristic_from_handle(&android_peripheral, characteristic_handle)?;
-                if !try_call_bool_method(&mut jenv, session.jsession.as_obj(), session.characteristic_unsubscribe_method,
-                                         &[JValue::Object(ble_device.as_obj()).to_jni(),
-                                                 JValue::Object(jcharacteristic.as_obj()).to_jni()])? {
+                if !try_call_bool_method(&mut jenv, &session.jsession, session.characteristic_unsubscribe_method,
+                                         &[JValue::Object(&ble_device).as_jni(),
+                                                 JValue::Object(&jcharacteristic).as_jni()])? {
 
                     return Err(Error::Other(anyhow!("Failed to initiate unsubscribe from characteristic")));
                 }
@@ -2101,9 +2101,9 @@ impl AndroidSession {
                 let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
                 let jdescriptor = session.gatt_descriptor_from_handle(&android_peripheral, descriptor_handle)?;
 
-                if !try_call_bool_method(&mut jenv, session.jsession.as_obj(), session.descriptor_read_method,
-                                         &[JValue::Object(ble_device.as_obj()).to_jni(),
-                                                JValue::Object(jdescriptor.as_obj()).to_jni()])?
+                if !try_call_bool_method(&mut jenv, &session.jsession, session.descriptor_read_method,
+                                         &[JValue::Object(&ble_device).as_jni(),
+                                                JValue::Object(&jdescriptor).as_jni()])?
                 {
                     return Err(Error::Other(anyhow!("Failed to initiate descriptor read")));
                 }
@@ -2120,9 +2120,9 @@ impl AndroidSession {
                 let jdescriptor = session.gatt_descriptor_from_handle(&android_peripheral, descriptor_handle)?;
 
                 let value_bytes = jenv.byte_array_from_slice(&value)?;
-                if !try_call_bool_method(&mut jenv, session.jsession.as_obj(), session.descriptor_write_method,
-                                         &[JValue::Object(ble_device.as_obj()).to_jni(),
-                                                 JValue::Object(jdescriptor.as_obj()).to_jni(),
+                if !try_call_bool_method(&mut jenv, &session.jsession, session.descriptor_write_method,
+                                         &[JValue::Object(&ble_device).as_jni(),
+                                                 JValue::Object(&jdescriptor).as_jni(),
                                                  jvalue { l: value_bytes }])?
                 {
                     return Err(Error::Other(anyhow!("Failed to initiate descriptor read")));
@@ -2333,9 +2333,9 @@ impl AndroidSession {
                 let mut jenv = session.jvm.get_env()?;
                 try_call_void_method(
                     &mut jenv,
-                    session.jsession.as_obj(),
+                    &session.jsession,
                     session.disconnect_device_gatt_method,
-                    &[JValue::Object(ble_device.as_obj()).to_jni()],
+                    &[JValue::Object(&ble_device).as_jni()],
                 )?;
             }
 
@@ -2386,9 +2386,9 @@ impl AndroidSession {
         let mut jenv = session.jvm.get_env()?;
         try_call_void_method(
             &mut jenv,
-            session.jsession.as_obj(),
+            &session.jsession,
             session.close_device_gatt_method,
-            &[JValue::Object(ble_device.as_obj()).to_jni()],
+            &[JValue::Object(&ble_device).as_jni()],
         )?;
 
         {
@@ -2581,14 +2581,14 @@ impl AndroidSession {
 
         let ble_device_ref = try_call_object_method(
             &mut jenv,
-            self.jsession.as_obj(),
+            &self.jsession,
             self.get_device_for_address_method,
             &[
-                JValue::Object(&address_jstr).to_jni(),
+                JValue::Object(&address_jstr).as_jni(),
                 peripheral_handle.into(),
             ],
         )?;
-        //JValue::Long(android_peripheral.peripheral_handle.0 as jlong).to_jni()])?;
+        //JValue::Long(android_peripheral.peripheral_handle.0 as jlong).as_jni()])?;
         let global_device_ref = jenv.new_global_ref(ble_device_ref)?;
 
         let (io_bus_tx, io_bus_rx) = mpsc::unbounded_channel();
@@ -2717,9 +2717,9 @@ impl AndroidSession {
     ) -> Result<ServiceHandle> {
         let id = try_call_int_method(
             jenv,
-            self.jsession.as_obj(),
+            &self.jsession,
             self.get_service_instance_id_method,
-            &[JValue::Object(service).to_jni()],
+            &[JValue::Object(service).as_jni()],
         )?;
         Ok(ServiceHandle(id as u32))
     }
@@ -2729,9 +2729,9 @@ impl AndroidSession {
     ) -> Result<uuid::Uuid> {
         match try_call_string_method(
             jenv,
-            self.jsession.as_obj(),
+            &self.jsession,
             self.get_service_uuid_method,
-            &[JValue::Object(service).to_jni()],
+            &[JValue::Object(service).as_jni()],
         )? {
             Some(uuid_str) => {
                 let uuid = uuid::Uuid::parse_str(&uuid_str)?;
@@ -2769,9 +2769,9 @@ impl AndroidSession {
     ) -> Result<CharacteristicHandle> {
         let id = try_call_int_method(
             jenv,
-            self.jsession.as_obj(),
+            &self.jsession,
             self.get_characteristic_instance_id_method,
-            &[JValue::Object(characteristic).to_jni()],
+            &[JValue::Object(characteristic).as_jni()],
         )?;
         debug!("Created new characterisitc handle :{id}");
         Ok(CharacteristicHandle(id as u32))
@@ -2783,9 +2783,9 @@ impl AndroidSession {
     ) -> Result<uuid::Uuid> {
         match try_call_string_method(
             jenv,
-            self.jsession.as_obj(),
+            &self.jsession,
             self.get_characteristic_uuid_method,
-            &[JValue::Object(characteristic).to_jni()],
+            &[JValue::Object(characteristic).as_jni()],
         )? {
             Some(uuid_str) => {
                 let uuid = uuid::Uuid::parse_str(&uuid_str)?;
@@ -2803,9 +2803,9 @@ impl AndroidSession {
     ) -> Result<CharacteristicProperties> {
         let props = try_call_int_method(
             jenv,
-            self.jsession.as_obj(),
+            &self.jsession,
             self.get_characteristic_properties_method,
-            &[JValue::Object(characteristic).to_jni()],
+            &[JValue::Object(characteristic).as_jni()],
         )?;
         Ok(CharacteristicProperties::from_bits_truncate(props as u32))
     }
@@ -2818,11 +2818,11 @@ impl AndroidSession {
     ) -> Result<DescriptorHandle> {
         let id = try_call_int_method(
             jenv,
-            self.jsession.as_obj(),
+            &self.jsession,
             self.get_descriptor_id_method,
             &[
-                JValue::Object(&ble_device).to_jni(),
-                JValue::Object(descriptor).to_jni(),
+                JValue::Object(ble_device).as_jni(),
+                JValue::Object(descriptor).as_jni(),
             ],
         )?;
         Ok(DescriptorHandle(id as u32))
@@ -2833,9 +2833,9 @@ impl AndroidSession {
     ) -> Result<uuid::Uuid> {
         match try_call_string_method(
             jenv,
-            self.jsession.as_obj(),
+            &self.jsession,
             self.get_descriptor_uuid_method,
-            &[JValue::Object(descriptor).to_jni()],
+            &[JValue::Object(descriptor).as_jni()],
         )? {
             Some(uuid_str) => {
                 let uuid = uuid::Uuid::parse_str(&uuid_str)?;
@@ -3044,7 +3044,7 @@ impl BackendSession for AndroidSession {
     fn start_scanning(&self, filter: &Filter) -> Result<()> {
         debug!("BLE: backend: start_scanning");
         let mut jenv = self.jvm.get_env()?;
-        let ble_session = self.jsession.as_obj();
+        let ble_session = self.jsession.as_ref();
 
         try_call_void_method(&mut jenv, ble_session, self.scanner_config_reset_method, &[])?;
         for uuid in filter.service_uuids.iter() {
@@ -3054,7 +3054,7 @@ impl BackendSession for AndroidSession {
                 &mut jenv,
                 ble_session,
                 self.scanner_config_add_service_uuid_method,
-                &[JValue::Object(&uuid_jstr).to_jni()],
+                &[JValue::Object(&uuid_jstr).as_jni()],
             )?;
         }
         try_call_void_method(&mut jenv, ble_session, self.start_scanning_method, &[])?;
@@ -3066,7 +3066,7 @@ impl BackendSession for AndroidSession {
     fn stop_scanning(&self) -> Result<()> {
         debug!("BLE: backend: stop_scanning");
         let mut jenv = self.jvm.get_env()?;
-        let ble_session = self.jsession.as_obj();
+        let ble_session = self.jsession.as_ref();
 
         try_call_void_method(&mut jenv, ble_session, self.stop_scanning_method, &[])?;
         debug!("BLE: backend: stop_scanning: jni done");
@@ -3190,9 +3190,9 @@ impl BackendSession for AndroidSession {
         debug!("calling JNI getServiceIncludes()");
         let includes = try_call_object_method(
             &mut jenv,
-            self.jsession.as_obj(),
+            &self.jsession,
             self.get_service_includes_method,
-            &[JValue::Object(gatt_service.as_obj()).to_jni()],
+            &[JValue::Object(&gatt_service).as_jni()],
         )?;
         let includes: JList = JList::from_env(&mut jenv, &includes)?;
         debug!("enumerating includes...");
@@ -3246,9 +3246,9 @@ impl BackendSession for AndroidSession {
         debug!("calling JNI getServiceCharacteristics()");
         let characteristics = try_call_object_method(
             &mut jenv,
-            self.jsession.as_obj(),
+            &self.jsession,
             self.get_service_characteristics_method,
-            &[JValue::Object(gatt_service.as_obj()).to_jni()],
+            &[JValue::Object(&gatt_service).as_jni()],
         )?;
         let characteristics: JList = JList::from_env(&mut jenv, &characteristics)?;
         debug!("enumerating characteristics...");
@@ -3374,9 +3374,9 @@ impl BackendSession for AndroidSession {
         debug!("calling JNI getCharacteristicDescriptors()");
         let descriptors = try_call_object_method(
             &mut jenv,
-            self.jsession.as_obj(),
+            &self.jsession,
             self.get_characteristic_descriptors_method,
-            &[JValue::Object(gatt_characteristic.as_obj()).to_jni()],
+            &[JValue::Object(&gatt_characteristic).as_jni()],
         )?;
         let descriptors: JList = JList::from_env(&mut jenv, &descriptors)?;
 
@@ -3388,7 +3388,7 @@ impl BackendSession for AndroidSession {
             // This will call through to Java to allocate a new ID for the descriptor that
             // can be passed over JNI
             let descriptor_handle =
-                self.get_descriptor_handle(&mut jenv, ble_device.as_obj(), &descriptor)?;
+                self.get_descriptor_handle(&mut jenv, &ble_device, &descriptor)?;
             let descriptor_global_ref = jenv.new_global_ref(descriptor)?;
             peripheral_state
                 .gatt_descriptors

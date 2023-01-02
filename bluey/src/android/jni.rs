@@ -205,7 +205,7 @@ pub struct JHandle<T: ?Sized + Sync> {
 }
 
 impl<T: ?Sized + Sync> JHandle<T> {
-    pub fn to_jni(self) -> jni::sys::jvalue {
+    pub fn as_jni(&self) -> jni::sys::jvalue {
         jni::sys::jvalue { j: self.handle }
     }
 }
