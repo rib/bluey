@@ -180,7 +180,7 @@ pub fn try_call_string_method(
 // FIXME: this isn't necessarily safe because we don't cross check that the
 // arguments are consistent with the signature
 pub fn try_call_object_method<'local>(
-    env: &mut jni::JNIEnv<'local>, obj: &JObject<'local>, method_id: JMethodID, args: &[jni::sys::jvalue],
+    env: &mut jni::JNIEnv<'local>, obj: &JObject, method_id: JMethodID, args: &[jni::sys::jvalue],
 ) -> Result<JObject<'local>> {
     unsafe {
         if let JValueOwned::Object(obj) = catch_jni_exception!(
