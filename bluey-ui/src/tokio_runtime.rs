@@ -17,7 +17,10 @@ fn configure_tokio_builder_for_android_jvm(builder: &mut tokio::runtime::Builder
         thread_attach_jvm.attach_current_thread_permanently().unwrap();
     });
     builder.on_thread_stop(move || {
-        thread_detach_jvm.detach_current_thread();
+        // # Safety
+        // We are certain that we won't access any invalid JNI pointers associated with
+        // this thread after detaching the thread explicitly
+        unsafe { thread_detach_jvm.detach_current_thread(); }
         let thread_id = std::thread::current().id();
         log::debug!("JVM: Detached tokio thread ({thread_id:?}");
     });
