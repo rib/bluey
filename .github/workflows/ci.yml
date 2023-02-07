@@ -19,6 +19,10 @@ jobs:
         - name: Setup Android SDK
           uses: android-actions/setup-android@v2
 
+        - name: Debug
+          working-directory: src/java
+          run: pwd
+
         - name: Build bluey-android.aar
           working-directory: src/java
           run: ./gradlew build
