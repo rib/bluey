@@ -10,6 +10,7 @@ buildscript {
 
 plugins {
     id 'com.android.library'
+    id 'maven-publish'
 }
 
 android {
@@ -35,6 +36,32 @@ android {
     }
 }
 
+publishing {
+    repositories {
+        maven {
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/rib/bluey")
+            credentials {
+                username = project.findProperty("gpr.user") ?: System.getenv("GITHUB_USERNAME")
+                password = project.findProperty("gpr.key") ?: System.getenv("GITHUB_TOKEN")
+            }
+        }
+    }
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            mavenRelease(MavenPublication) {
+                groupId = 'co.bluey'
+                artifactId = 'bluey-android'
+                version = '0.1'
+
+                from components.release
+            }
+        }
+    }
+}
 dependencies {
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test.ext:junit:1.1.3'
