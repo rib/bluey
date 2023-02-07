@@ -74,10 +74,10 @@ impl fmt::Display for Address {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Address::MAC(mac) => {
-                write!(f, "{}", mac)
+                write!(f, "{mac}")
             }
             Address::String(s) => {
-                write!(f, "{}", s)
+                write!(f, "{s}")
             }
         }
     }
@@ -86,10 +86,10 @@ impl fmt::Debug for Address {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Address::MAC(mac) => {
-                write!(f, "MAC:{}", mac)
+                write!(f, "MAC:{mac}")
             }
             Address::String(s) => {
-                write!(f, "String:{}", s)
+                write!(f, "String:{s}")
             }
         }
     }
