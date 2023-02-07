@@ -30,5 +30,6 @@ jobs:
         - name: Publish bluey-android.aar
           working-directory: ./bluey/src/java
           env:
+            GITHUB_USERNAME: ${{ github.actor }}
             GITHUB_TOKEN: ${{ github.token }}
           run: ./gradlew publish
