@@ -235,6 +235,9 @@ public class BleSession /*implements Closeable*/ {
     private void startScanDirect() {
         scanner = adapter.getBluetoothLeScanner();
 
+        // TODO: gracefully handle any failure to find an adapter here!
+        // (E.g. due to the Bluetooth being disabled on the Android device)
+
         BleSession session = this;
 
         scannerCallback = new ScanCallback() {

@@ -11,4 +11,5 @@ exclude = [
 ]
 
 [patch.crates-io]
-jni = { git = "https://github.com/argv-minus-one/jni-rs.git", branch = "safe-refs" }
+jni = { git = "https://github.com/jni-rs/jni-rs.git", branch = "master" }
+#jni = { path = "../jni-rs" }

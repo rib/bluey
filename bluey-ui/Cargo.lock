@@ -1129,6 +1129,7 @@ dependencies = [
 [[package]]
 name = "jni"
 version = "0.21.0-alpha.0"
+source = "git+https://github.com/jni-rs/jni-rs.git?branch=master#a0c4c48f7b4304a4b109d3617213159c142d64c1"
 dependencies = [
  "cesu8",
  "cfg-if",

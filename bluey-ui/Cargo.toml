@@ -29,13 +29,15 @@ env_logger = "0.9"
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.11.0"
-android-activity = { version = "0.4.0-beta.1", features = [ "game-activity" ] }
-jni = "0.20"
+android-activity = { version = "0.4.0", features = [ "game-activity" ] }
+jni = "0.21.0-alpha"
 ndk-context = "0.1.1"
 
 [patch.crates-io]
 winit = { git = "https://github.com/rib/winit", branch = "android-activity" }
 #winit = { path="../../../winit" }
+jni = { git = "https://github.com/jni-rs/jni-rs.git", branch = "master" }
+#jni = { path = "../../jni-rs" }
 
 # Egui 0.19 is missing some fixes for Android so we need to build against
 # git master for now
