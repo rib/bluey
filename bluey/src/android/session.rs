@@ -92,7 +92,7 @@ impl From<AndroidGattStatus> for Option<GattError> {
             AndroidGattStatus::WriteNotPermit => Some(GattError::WriteNotPermitted),
             AndroidGattStatus::ReadNotPermit => Some(GattError::ReadNotPermitted),
             AndroidGattStatus::Congested => Some(GattError::Congested),
-            _ => Some(GattError::GeneralFailure(format!("{:?}", status))),
+            _ => Some(GattError::GeneralFailure(format!("{status:?}"))),
         }
     }
 }
@@ -655,7 +655,7 @@ impl BleSessionNative {
 
         if let Err(err) = result {
             error!("Failed to handle companion device notification: {}", err);
-            env.throw(format!("{}", err));
+            env.throw(format!("{err}"));
         }
     }
 
@@ -1739,7 +1739,7 @@ impl AndroidSession {
                         AndroidGattStatus::Success => {
                             let _ = session
                                 .backend_bus
-                                .send(BackendEvent::PeripheralPropertySet { peripheral_handle, property: BackendPeripheralProperty::Rssi(rssi as i16) });
+                                .send(BackendEvent::PeripheralPropertySet { peripheral_handle, property: BackendPeripheralProperty::Rssi(rssi) });
 
                             let _ = result_tx.send(Ok(rssi));
                         },
