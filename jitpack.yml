@@ -1,0 +1,10 @@
+jdk:
+  - openjdk11
+
+# Since there are
+install:
+   # Extract the package version from Cargo.toml so we have one source of truth
+   #- export PKG_VERSION=$(cat bluey/Cargo.toml |grep "^version = "|head -1|cut -d= -f2|cut -d\" -f2)
+   - cd ./bluey/src/java
+   - ./gradlew clean publishToMavenLocal
+   # -Pcargo.pkgVersion=$PKG_VERSION
