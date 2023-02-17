@@ -19,17 +19,13 @@ jobs:
         - name: Setup Android SDK
           uses: android-actions/setup-android@v2
 
-        #- name: Debug
-        #  working-directory: ./bluey/src/java
-        #  run: find ./
-
         - name: Build bluey-android.aar
           working-directory: ./bluey/src/java
-          run: ./gradlew build
+          run: ./gradlew publishToMavenLocal
 
-        - name: Publish bluey-android.aar
-          working-directory: ./bluey/src/java
-          env:
-            GITHUB_USERNAME: ${{ github.actor }}
-            GITHUB_TOKEN: ${{ github.token }}
-          run: ./gradlew publish
+        #- name: Publish bluey-android.aar
+        #  working-directory: ./bluey/src/java
+        #  env:
+        #    GITHUB_USERNAME: ${{ github.actor }}
+        #    GITHUB_TOKEN: ${{ github.token }}
+        #  run: ./gradlew publish
