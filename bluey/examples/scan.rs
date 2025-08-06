@@ -3,7 +3,6 @@
 use bluey;
 use bluey::session;
 use futures::FutureExt;
-use std::io::Write;
 use std::pin::Pin;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::signal;
@@ -78,9 +77,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Event::Interrupt => {
                 println!("Interrupt received!");
                 break;
-            }
-            _ => {
-                println!("Unknown event");
             }
         }
     }

@@ -40,6 +40,9 @@ use crate::winrt;
 #[cfg(target_os = "android")]
 use crate::android;
 
+#[cfg(target_os = "linux")]
+use crate::linux;
+
 use anyhow::anyhow;
 
 #[derive(Clone, Debug)]
@@ -68,8 +71,16 @@ impl Deref for Session {
 #[cfg(not(target_os = "android"))]
 #[tokio::test]
 async fn session_eq() {
-    let session0 = SessionConfig::new().start().await.unwrap();
-    let session1 = SessionConfig::new().start().await.unwrap();
+    let session0 = SessionConfig::new()
+        .set_backend(Backend::Fake)
+        .start()
+        .await
+        .unwrap();
+    let session1 = SessionConfig::new()
+        .set_backend(Backend::Fake)
+        .start()
+        .await
+        .unwrap();
     assert_ne!(session0, session1);
     assert_eq!(session0, session0.clone());
 }
@@ -213,6 +224,8 @@ enum BackendSessionImpl {
     Winrt(winrt::session::WinrtSession),
     #[cfg(target_os = "android")]
     Android(android::session::AndroidSession),
+    #[cfg(target_os = "linux")]
+    Linux(linux::session::LinuxSession),
     Fake(fake::session::FakeSession),
 }
 impl BackendSessionImpl {
@@ -222,6 +235,8 @@ impl BackendSessionImpl {
             BackendSessionImpl::Winrt(winrt) => winrt,
             #[cfg(target_os = "android")]
             BackendSessionImpl::Android(android) => android,
+            #[cfg(target_os = "linux")]
+            BackendSessionImpl::Linux(linux) => linux,
             BackendSessionImpl::Fake(fake) => fake,
         }
     }
@@ -570,6 +585,12 @@ impl Session {
                 let implementation =
                     android::session::AndroidSession::new(&mut config, backend_bus_tx)?;
                 BackendSessionImpl::Android(implementation)
+            }
+            #[cfg(target_os = "linux")]
+            Backend::SystemDefault => {
+                let implementation =
+                    linux::session::LinuxSession::new(&mut config, backend_bus_tx).await?;
+                BackendSessionImpl::Linux(implementation)
             }
             #[cfg(target_arch = "wasm32")]
             Backend::SystemDefault => {

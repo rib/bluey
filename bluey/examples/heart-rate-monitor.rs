@@ -1,13 +1,10 @@
 #![cfg(not(target_os = "android"))]
 
+use bluey::session;
 use bluey::uuid::uuid_from_u16;
-use bluey::{
-    self, characteristic::Characteristic, peripheral::Peripheral, service::Service,
-    PeripheralPropertyId,
-};
-use bluey::{characteristic, session};
+use bluey::{self, characteristic::Characteristic, service::Service, PeripheralPropertyId};
 use futures::FutureExt;
-use log::{info, trace, warn};
+use log::println;
 use std::pin::Pin;
 use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]

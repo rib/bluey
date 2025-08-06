@@ -36,6 +36,9 @@ mod winrt;
 #[cfg(target_os = "android")]
 mod android;
 
+#[cfg(target_os = "linux")]
+mod linux;
+
 mod fake;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
