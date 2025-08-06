@@ -16,12 +16,10 @@ name = "bluey"
 [dependencies]
 async-trait = "0.1"
 futures = "0.3"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros"] }
-tokio-stream = { version = "0.1", features = ["sync"]}
 log = "0.4"
 thiserror = "1.0"
 anyhow = "1.0"
-uuid = { version = "0.8", features = ["v4"] }
+uuid = { workspace = true }
 dashmap = "4"
 serde = { version = "1.0", features = ["derive"] }
 arrayvec = "0.7"
@@ -29,6 +27,15 @@ function_name = "0.2.0"
 lazy_static = "1"
 bitflags = "1"
 const_format = "0.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = [
+  "rt",
+  "rt-multi-thread",
+  "sync",
+  "macros",
+] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = "0.19.0"
@@ -45,15 +52,19 @@ anyhow = "1.0"
 uuid = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+tokio = { version = "1", features = ["sync", "macros"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
 version = "0.3"
 features = [
   "console",
   "Event",
+  "EventTarget",
   "Window",
   "Navigator",
   "Bluetooth",
@@ -63,10 +74,23 @@ features = [
   "BluetoothRemoteGattServer",
   "BluetoothRemoteGattCharacteristic",
   "BluetoothRemoteGattService",
+  "BluetoothRemoteGattDescriptor",
   "BluetoothCharacteristicProperties",
 ]
 
 [dev-dependencies]
 # upstream pretty_env_logger is no longer maintained...
-pretty_env_logger = { git = "https://github.com/project-anni/pretty-env-logger.git" }
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "signal"] }
+#pretty_env_logger = { git = "https://github.com/project-anni/pretty-env-logger.git" }
+pretty_env_logger = "0.5"
+env_logger = "0.10"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1", features = [
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "signal",
+] }
+
+[build-dependencies]
+execute = "0.2"

@@ -27,7 +27,8 @@ impl FakeSession {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl BackendSession for FakeSession {
     fn supports_scanning(&self) -> bool {
         true

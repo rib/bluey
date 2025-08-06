@@ -23,10 +23,9 @@ enum Event {
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::builder()
+    pretty_env_logger::formatted_builder()
         .filter_level(log::LevelFilter::Warn) // Default Log Level
         .parse_default_env()
-        .format(pretty_env_logger::formatter)
         .init();
 
     let session = session::SessionConfig::new().start().await?;

@@ -44,6 +44,9 @@ use crate::android;
 #[cfg(target_os = "linux")]
 use crate::linux;
 
+#[cfg(target_arch = "wasm32")]
+use crate::web;
+
 use anyhow::anyhow;
 
 #[derive(Clone, Debug)]
@@ -69,7 +72,7 @@ impl Deref for Session {
     }
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 #[tokio::test]
 async fn session_eq() {
     let session0 = SessionConfig::new()
@@ -131,7 +134,8 @@ pub struct SessionInner {
 // of associated handles (such as peripheral -> service -> characteristic -> descriptor)
 // in case that may simplify state tracking in the backend (by not having to
 // track those relationshipts itself)
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub(crate) trait BackendSession {
     fn supports_scanning(&self) -> bool;
     fn supports_select_peripheral(&self) -> bool;
@@ -233,6 +237,8 @@ enum BackendSessionImpl {
     Android(android::session::AndroidSession),
     #[cfg(target_os = "linux")]
     Linux(linux::session::LinuxSession),
+    #[cfg(target_arch = "wasm32")]
+    Web(web::session::WebSession),
     Fake(fake::session::FakeSession),
 }
 impl BackendSessionImpl {
@@ -244,6 +250,8 @@ impl BackendSessionImpl {
             BackendSessionImpl::Android(android) => android,
             #[cfg(target_os = "linux")]
             BackendSessionImpl::Linux(linux) => linux,
+            #[cfg(target_arch = "wasm32")]
+            BackendSessionImpl::Web(web) => web,
             BackendSessionImpl::Fake(fake) => fake,
         }
     }
@@ -601,8 +609,8 @@ impl Session {
             }
             #[cfg(target_arch = "wasm32")]
             Backend::SystemDefault => {
-                let implementation = fake::session::FakeSession::new(&config, backend_bus_tx)?;
-                BackendSessionImpl::Fake(implementation)
+                let implementation = web::session::WebSession::new(&config, backend_bus_tx)?;
+                BackendSessionImpl::Web(implementation)
             }
             Backend::Fake => {
                 let implementation = fake::session::FakeSession::new(&config, backend_bus_tx)?;
@@ -630,7 +638,12 @@ impl Session {
         // task will also be able to recognise when the TX end of the backend_bus
         // closes.
         let weak_session = Arc::downgrade(&session.inner);
+        #[cfg(not(target_arch = "wasm32"))]
         tokio::spawn(async move { Session::run_backend_task(weak_session, backend_bus_rx).await });
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(async move {
+            Session::run_backend_task(weak_session, backend_bus_rx).await
+        });
 
         Ok(session)
     }

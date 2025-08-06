@@ -39,6 +39,9 @@ mod android;
 #[cfg(target_os = "linux")]
 mod linux;
 
+#[cfg(target_arch = "wasm32")]
+mod web;
+
 mod fake;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,0 +1,25 @@
+[build]
+# The index HTML file to use for serving
+target = "index.html"
+
+# Output directory for the built assets
+dist = "dist"
+
+# Base public URL for the application
+public_url = "./"
+
+[watch]
+# Automatically rebuild on file changes
+watch = ["src", "index.html", "Cargo.toml"]
+
+[serve]
+# Port to serve on during development
+port = 8080
+
+# Auto-open browser
+open = true
+
+# Enable HTTPS (required for Web Bluetooth)
+# Note: This creates a self-signed certificate
+# For production, use proper HTTPS setup
+protocol = "https"

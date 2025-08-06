@@ -1,11 +1,9 @@
 [workspace]
-resolver="2"
+resolver = "2"
 
-members = [
-    "bluey",
-    "bluey-web"
-]
+members = ["bluey", "bluey-web"]
 
-exclude = [
-    "bluey-ui"
-]
+exclude = ["bluey-ui"]
+
+[workspace.dependencies]
+uuid = { version = "1", features = ["v4"] }

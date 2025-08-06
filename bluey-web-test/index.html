@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Bluey Web Bluetooth Heart Rate Monitor Test</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            color: #007cba;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        .info {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+            border-left: 4px solid #2196f3;
+        }
+        
+        .warning {
+            background: #fff3e0;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+            border-left: 4px solid #ff9800;
+        }
+        
+        button {
+            background: #007cba;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: block;
+            margin: 20px auto;
+            min-width: 200px;
+        }
+        
+        button:hover:not(:disabled) {
+            background: #005a9e;
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        #log {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 20px 0;
+            height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            background: #fafafa;
+            white-space: pre-wrap;
+            line-height: 1.4;
+        }
+        
+        .requirements {
+            background: #f3e5f5;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+            border-left: 4px solid #9c27b0;
+        }
+        
+        .requirements h3 {
+            margin-top: 0;
+            color: #9c27b0;
+        }
+        
+        .requirements ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🫀 Bluey Web Bluetooth Heart Rate Monitor Test</h1>
+        
+        <div class="info">
+            <strong>About this test:</strong><br>
+            This test demonstrates the Bluey library's Web Bluetooth backend by connecting to a Bluetooth LE heart rate monitor 
+            and displaying real-time heart rate measurements and RR intervals.
+        </div>
+        
+        <div class="requirements">
+            <h3>Requirements:</h3>
+            <ul>
+                <li>A Bluetooth LE heart rate monitor (chest strap, smartwatch, etc.)</li>
+                <li>Chrome, Edge, or another browser supporting Web Bluetooth</li>
+                <li>HTTPS connection (required by Web Bluetooth API)</li>
+                <li>User gesture (click the button below) to initiate Bluetooth access</li>
+            </ul>
+        </div>
+        
+        <div class="warning">
+            <strong>Note:</strong> Web Bluetooth requires user interaction to access devices. 
+            When you click the test button, your browser will show a device selection dialog. 
+            Choose your heart rate monitor from the list.
+        </div>
+        
+        <p style="text-align: center; color: #666;">
+            Click the button below to start testing. The log will show all communication with your heart rate monitor.
+        </p>
+        
+        <div id="log" style="display: none;"><!-- Log will be created dynamically --></div>
+    </div>
+
+    <script>
+        // Show log area when test starts
+        document.addEventListener('DOMContentLoaded', function() {
+            // Watch for log div creation and show it
+            const observer = new MutationObserver(function(mutations) {
+                mutations.forEach(function(mutation) {
+                    mutation.addedNodes.forEach(function(node) {
+                        if (node.id === 'log') {
+                            node.style.display = 'block';
+                            observer.disconnect();
+                        }
+                    });
+                });
+            });
+            
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        });
+    </script>
+</body>
+</html>
