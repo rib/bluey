@@ -29,6 +29,7 @@ fn configure_tokio_builder_for_android_jvm(builder: &mut tokio::runtime::Builder
 fn create_tokio_runtime_builder_default() -> tokio::runtime::Builder {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder.enable_time();
+    builder.enable_io();
 
     builder
 }
