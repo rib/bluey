@@ -3,8 +3,10 @@
 // positives atm :(
 #![allow(dead_code)]
 
-use std::time::Duration;
-use winit::event_loop::{EventLoopWindowTarget, EventLoopBuilder};
+use std::num::NonZeroU32;
+use std::sync::Arc;
+use egui::ViewportId;
+use winit::event_loop::{ActiveEventLoop, EventLoop};
 
 use winit::{
     event_loop::{ControlFlow},
@@ -32,9 +34,13 @@ const COMPANION_CHOOSER_REQUEST_CODE: u32 = 0;
 #[derive(Clone)]
 struct RepaintSignal(std::sync::Arc<std::sync::Mutex<winit::event_loop::EventLoopProxy<ui::Event>>>);
 
+struct Window {
+    window: Arc<winit::window::Window>,
+    state: egui_winit::State,
+}
 
-fn create_window<T>(event_loop: &EventLoopWindowTarget<T>, state: &mut State, painter: &mut Painter) -> winit::window::Window {
-    let window = winit::window::WindowBuilder::new()
+fn create_window(event_loop: &ActiveEventLoop, ctx: egui::Context, painter: &mut Painter) -> Option<Window> {
+    let window_attributes = winit::window::Window::default_attributes()
         .with_decorations(true)
         .with_resizable(true)
         .with_transparent(false)
@@ -42,11 +48,26 @@ fn create_window<T>(event_loop: &EventLoopWindowTarget<T>, state: &mut State, pa
         .with_inner_size(winit::dpi::PhysicalSize {
             width: INITIAL_WIDTH,
             height: INITIAL_HEIGHT,
-        })
-            .build(&event_loop)
-            .unwrap();
+        });
 
-    unsafe { painter.set_window(Some(&window)) };
+    let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+
+    if let Err(err) =
+        pollster::block_on(painter.set_window(egui::ViewportId::ROOT, Some(window.clone())))
+    {
+        log::error!("Failed to associate new Window with Painter: {err:?}");
+        return None;
+    }
+
+    let native_pixels_per_point = Some(window.scale_factor() as f32);
+    let mut state = State::new(
+        ctx.clone(),
+        ViewportId::ROOT,
+        &window,
+        native_pixels_per_point,
+        None,
+        None,
+    );
 
     // NB: calling set_window will lazily initialize render state which
     // means we will be able to query the maximum supported texture
@@ -55,12 +76,9 @@ fn create_window<T>(event_loop: &EventLoopWindowTarget<T>, state: &mut State, pa
         state.set_max_texture_side(max_size);
     }
 
-    let pixels_per_point = window.scale_factor() as f32;
-    state.set_pixels_per_point(pixels_per_point);
-
     window.request_redraw();
 
-    window
+    Some(Window { window, state })
 }
 
 
@@ -69,22 +87,21 @@ fn _main(event_loop: winit::event_loop::EventLoop<ui::Event>) {
     let repaint_signal = RepaintSignal(std::sync::Arc::new(std::sync::Mutex::new(
         event_loop.create_proxy()
     )));
-    ctx.set_request_repaint_callback(move || {
+    ctx.set_request_repaint_callback(move |_info| {
+        log::debug!("Request Repaint Callback");
         repaint_signal.0.lock().unwrap().send_event(ui::Event::RequestRedraw).ok();
     });
 
-    let mut winit_state = egui_winit::State::new(&event_loop);
-    let mut painter = egui_wgpu::winit::Painter::new(
-        wgpu::Backends::all(),
-        wgpu::PowerPreference::HighPerformance,
-        wgpu::DeviceDescriptor {
-            label: None,
-            features: wgpu::Features::default(),
-            limits: wgpu::Limits::default()
-        },
-        wgpu::PresentMode::Fifo,
-        1);
-    let mut window: Option<winit::window::Window> = None;
+    let mut painter = pollster::block_on(Painter::new(
+        ctx.clone(),
+        egui_wgpu::WgpuConfiguration::default(),
+        1, // msaa samples
+        Some(wgpu::TextureFormat::Depth24Plus),
+        false, // don't require transparent backbuffer
+        false, // no dithering
+    ));
+
+    let mut window: Option<Window> = None;
     let mut ui_state = ui::State::default();
 
     let bluetooth_event_proxy = event_loop.create_proxy();
@@ -96,82 +113,93 @@ fn _main(event_loop: winit::event_loop::EventLoop<ui::Event>) {
         //Some(COMPANION_CHOOSER_REQUEST_CODE));
 
 
-    event_loop.run(move |event, event_loop, control_flow| {
+    #[allow(deprecated)]
+    event_loop.run(move |event, event_loop| {
+        event_loop.set_control_flow(ControlFlow::Wait);
 
-        match event {
-            NewEvents(..) => {
-                // By default we just wait for new events
-                *control_flow = ControlFlow::Wait;
+        log::debug!("handling winit event");
+
+        match (&mut window, event) {
+            (None, Resumed) => {
+                window = create_window(event_loop, ctx.clone(), &mut painter);
             }
-
-            Resumed => {
-                match window {
-                    None => {
-                        window = Some(create_window(event_loop, &mut winit_state, &mut painter));
-                    }
-                    Some(ref window) => {
-                        unsafe { painter.set_window(Some(window)) };
-                        window.request_redraw();
-                    }
-                }
+            (Some(ref mut w), Resumed) => {
+                pollster::block_on(painter.set_window(egui::ViewportId::ROOT, Some(w.window.clone())))
+                    .unwrap_or_else(|err| {
+                        log::error!("Failed to associate Window with Painter: {err:?}");
+                    });
+                w.window.request_redraw();
             }
-
-            #[cfg(target_os="android")]
-            Suspended => {
+            (_, Suspended) => {
                 window = None;
             }
-
-            RedrawRequested(..) => {
-                #[allow(unused_mut)]
+            (_, UserEvent(ui::Event::RequestRedraw)) => {
                 if let Some(window) = window.as_ref() {
-                    let mut raw_input = winit_state.take_egui_input(window);
-
-                    #[cfg(target_os="android")]
-                    if let Some(ppp) = raw_input.pixels_per_point {
-                        raw_input.pixels_per_point = Some(ppp * 2.0);
-                    }
-
-                    let full_output = ctx.run(raw_input, |ctx| {
-                        ui_state.draw(ctx, &tx);
-                    });
-                    winit_state.handle_platform_output(window, &ctx, full_output.platform_output);
-
-                    painter.paint_and_update_textures(winit_state.pixels_per_point(),
-                        egui::Rgba::default(),
-                        &ctx.tessellate(full_output.shapes),
-                        &full_output.textures_delta);
-
-                    if full_output.repaint_after.is_zero() {
-                        window.request_redraw();
-                    } else if full_output.repaint_after < Duration::from_secs(1) { // avoid overflow panic
-                        *control_flow = ControlFlow::WaitUntil(std::time::Instant::now() + full_output.repaint_after);
-                    }
+                    log::debug!("Winit request redraw, user event");
+                    window.window.request_redraw();
                 }
             }
-            MainEventsCleared | UserEvent(ui::Event::RequestRedraw) => {
-                if let Some(window) = window.as_ref() {
-                    window.request_redraw();
-                }
-            }
-            UserEvent(user_event) => {
+            (_, UserEvent(user_event)) => {
                 ui_state.handle_event(user_event, &tx);
             }
-            WindowEvent { event, .. } => {
-                if winit_state.on_event(&ctx, &event) == false {
+            (
+                Some(window),
+                WindowEvent {
+                    window_id, event, ..
+                },
+            ) if window.window.id() == window_id => {
+                log::debug!("Window Event: {event:?}");
+
+                let response = window.state.on_window_event(&window.window, &event);
+                // egui_winit probably shouldn't be returning repaint=true for RedrawRequested
+                // events but in any case we special case RedrawRequested events here so we can
+                // avoid creating an infinite repaint cycle.
+                if !matches!(event, winit::event::WindowEvent::RedrawRequested)
+                    && response.repaint
+                {
+                    window.window.request_redraw();
+                }
+
+                if !response.consumed {
                     match event {
+                        winit::event::WindowEvent::RedrawRequested => {
+                            let raw_input = window.state.take_egui_input(&window.window);
+                            let full_output = ctx.run(raw_input, |ctx| {
+                                ui_state.draw(ctx, &tx);
+                            });
+                            window.state.handle_platform_output(
+                                &window.window,
+                                full_output.platform_output,
+                            );
+                            painter.paint_and_update_textures(
+                                ViewportId::ROOT,
+                                full_output.pixels_per_point,
+                                [0.0, 0.0, 0.0, 0.0],
+                                &ctx.tessellate(
+                                    full_output.shapes,
+                                    full_output.pixels_per_point,
+                                ),
+                                &full_output.textures_delta,
+                                vec![],
+                            );
+                        }
                         winit::event::WindowEvent::Resized(size) => {
-                            painter.on_window_resized(size.width, size.height);
+                            let width = NonZeroU32::new(size.width).unwrap_or(NonZeroU32::MIN);
+                            let height =
+                                NonZeroU32::new(size.height).unwrap_or(NonZeroU32::MIN);
+                            painter.on_window_resized(ViewportId::ROOT, width, height);
                         }
                         winit::event::WindowEvent::CloseRequested => {
-                            *control_flow = ControlFlow::Exit;
+                            event_loop.exit();
                         }
                         _ => {}
                     }
                 }
-            },
-            _ => (),
+            }
+            _ => {}
         }
-    });
+
+    }).unwrap();
 }
 
 fn _tokio_main(event_loop: winit::event_loop::EventLoop<ui::Event>) {
@@ -196,10 +224,10 @@ fn android_main(app: AndroidApp) {
         )
     );
 
-    let event_loop: winit::event_loop::EventLoop<ui::Event> = EventLoopBuilder::with_user_event()
+    let event_loop = EventLoop::with_user_event()
         .with_android_app(app)
-        .build();
-
+        .build()
+        .unwrap();
     _tokio_main(event_loop);
 }
 // Stop rust-analyzer from complaining that this file doesn't have a main() function...
@@ -215,6 +243,6 @@ fn main() {
         .parse_default_env()
         .init();
 
-    let event_loop: winit::event_loop::EventLoop<ui::Event> = EventLoopBuilder::with_user_event().build();
+    let event_loop = EventLoop::with_user_event().build().unwrap();
     _tokio_main(event_loop);
 }

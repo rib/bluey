@@ -8,8 +8,8 @@ resolver = "2"
 
 [dependencies]
 log = "0.4"
-winit = "0.27.2"
-wgpu = "0.13.0"
+winit = "0.30"
+wgpu = "25"
 pollster = "0.2"
 bluey = { path = "../bluey" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros"] }
@@ -20,9 +20,9 @@ futures = "0.3"
 serde = "1"
 serde_json = "1"
 lazy_static = "1"
-egui = "0.19"
-egui-wgpu = { version = "0.19", features = [ "winit" ] }
-egui-winit = "0.19"
+egui = "0.32"
+egui-wgpu = { version = "0.32", features = [ "winit" ] }
+egui-winit = "0.32"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 env_logger = "0.9"
@@ -51,7 +51,7 @@ desktop = []
 
 [lib]
 name="main"
-crate_type=["cdylib"]
+crate-type=["cdylib"]
 
 [[bin]]
 path="src/lib.rs"
