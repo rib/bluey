@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use std::char;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
+use std::future::Future;
 use std::sync::atomic::compiler_fence;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -851,6 +852,16 @@ impl WinrtSession {
 
 #[async_trait]
 impl BackendSession for WinrtSession {
+    fn supports_scanning(&self) -> bool {
+        true
+    }
+    fn supports_select_peripheral(&self) -> bool {
+        false
+    }
+    fn supports_declare_peripheral(&self) -> bool {
+        true
+    }
+
     async fn start_scanning(&self, filter: &Filter) -> Result<()> {
         trace!("winrt: start scanning");
 
@@ -887,6 +898,10 @@ impl BackendSession for WinrtSession {
         trace!("winrt: stop scanning");
         self.inner.watcher.Stop()?;
         Ok(())
+    }
+
+    async fn select_peripheral(&self, filter: &Filter) -> Result<PeripheralHandle> {
+        Err(Error::Unsupported)
     }
 
     fn declare_peripheral(&self, address: Address, name: String) -> Result<PeripheralHandle> {

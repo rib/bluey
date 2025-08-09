@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::pin::Pin;
@@ -187,7 +188,7 @@ impl IntoJHandle for AndroidSession {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum AndroidBondState {
     None,    // 10 / 0xa
     Bonding, // 11 / 0xb
@@ -3063,6 +3064,16 @@ fn notify_io_callback_from_jni<F>(
 
 #[async_trait]
 impl BackendSession for AndroidSession {
+    fn supports_scanning(&self) -> bool {
+        true
+    }
+    fn supports_select_peripheral(&self) -> bool {
+        false
+    }
+    fn supports_declare_peripheral(&self) -> bool {
+        true
+    }
+
     async fn start_scanning(&self, filter: &Filter) -> Result<()> {
         debug!("BLE: backend: start_scanning");
         let mut jenv = self.jvm.get_env()?;
@@ -3098,6 +3109,10 @@ impl BackendSession for AndroidSession {
 
             Ok(())
         })
+    }
+
+    async fn select_peripheral(&self, filter: &Filter) -> Result<PeripheralHandle> {
+        Err(Error::Unsupported)
     }
 
     fn declare_peripheral(&self, address: Address, name: String) -> Result<PeripheralHandle> {

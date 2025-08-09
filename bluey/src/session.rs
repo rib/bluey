@@ -4,6 +4,7 @@ use futures::{stream, Stream, StreamExt};
 use log::{info, trace, warn};
 use std::borrow::BorrowMut;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::{Add, Deref};
@@ -132,8 +133,14 @@ pub struct SessionInner {
 // track those relationshipts itself)
 #[async_trait]
 pub(crate) trait BackendSession {
+    fn supports_scanning(&self) -> bool;
+    fn supports_select_peripheral(&self) -> bool;
+    fn supports_declare_peripheral(&self) -> bool;
+
     async fn start_scanning(&self, filter: &Filter) -> Result<()>;
     async fn stop_scanning(&self) -> Result<()>;
+
+    async fn select_peripheral(&self, filter: &Filter) -> Result<PeripheralHandle>;
 
     fn declare_peripheral(&self, address: Address, name: String) -> Result<PeripheralHandle>;
 
@@ -1721,12 +1728,28 @@ impl Session {
         }))
     }
 
+    pub fn supports_scanning(&self) -> bool {
+        self.backend.api().supports_scanning()
+    }
+
+    pub fn supports_select_peripheral(&self) -> bool {
+        self.backend.api().supports_select_peripheral()
+    }
+
+    pub fn supports_declare_peripheral(&self) -> bool {
+        self.backend.api().supports_declare_peripheral()
+    }
+
     /// Starts scanning for Bluetooth devices, according to the given filter
     ///
     /// Note: It's an error to try and initiate multiple scans in parallel
     /// considering the varied ways different backends will try to handle
     /// such requests.
     pub async fn start_scanning(&self, filter: Filter) -> Result<()> {
+        if !self.supports_scanning() {
+            return Err(Error::Unsupported);
+        }
+
         let mut is_scanning_guard = self.is_scanning.lock().await;
 
         if *is_scanning_guard {
@@ -1751,6 +1774,15 @@ impl Session {
         Ok(())
     }
 
+    pub async fn select_peripheral(&self, filter: Filter) -> Result<Peripheral> {
+        if !self.supports_select_peripheral() {
+            return Err(Error::Unsupported);
+        }
+
+        let peripheral_handle = self.backend.api().select_peripheral(&filter).await?;
+        Ok(self.get_application_peripheral(peripheral_handle))
+    }
+
     pub fn peripherals(&self) -> Result<Vec<Peripheral>> {
         Ok(self
             .peripherals
@@ -1760,6 +1792,10 @@ impl Session {
     }
 
     pub fn declare_peripheral(&self, address: Address, name: String) -> Result<Peripheral> {
+        if !self.supports_declare_peripheral() {
+            return Err(Error::Unsupported);
+        }
+
         let peripheral_handle = self.backend_api().declare_peripheral(address, name)?;
 
         Ok(self.get_application_peripheral(peripheral_handle))
