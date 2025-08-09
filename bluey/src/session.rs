@@ -542,7 +542,7 @@ impl<'a> SessionConfig<'a> {
         }
     }
 
-    pub fn set_backend(&mut self, backend: Backend) -> &mut Self {
+    pub fn set_backend(mut self, backend: Backend) -> Self {
         self.backend = backend;
         self
     }
