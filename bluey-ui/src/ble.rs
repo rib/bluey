@@ -1,10 +1,14 @@
-use log::Level;
-use log::{error, warn, info, debug, trace};
+#[cfg(target_os = "android")]
+use android_activity::AndroidApp;
+#[cfg(target_os = "android")]
+use jni::vm::JavaVM;
+use tracing::{debug, error, info, trace, warn};
 
-use std::thread;
-use winit::event_loop::EventLoopProxy;
 use crate::tokio_runtime::*;
 use crate::ui;
+use crate::ui::Level;
+use std::thread;
+use winit::event_loop::EventLoopProxy;
 
 use std::pin::Pin;
 use std::time::Duration;
@@ -12,18 +16,20 @@ use tokio_stream::wrappers::{IntervalStream, UnboundedReceiverStream};
 use tokio_stream::{Stream, StreamExt, StreamMap};
 use uuid::Uuid;
 
-
+use bluey::session;
 use bluey::uuid::uuid_from_u16;
 use bluey::{
-    self, descriptor::Descriptor, characteristic::Characteristic, peripheral::Peripheral, service::Service,
-    PeripheralPropertyId,
+    self, characteristic::Characteristic, descriptor::Descriptor, peripheral::Peripheral,
+    service::Service, PeripheralPropertyId,
 };
-use bluey::session;
 
 #[derive(Debug, Clone)]
 pub enum BleRequest {
     StartScanning,
     StopScanning,
+    SelectDevice,
+    RequestScanConnectPermission,
+    //RequestConnectPermission,
     Connect(Peripheral),
     Disconnect(Peripheral),
     DiscoverGattServices(Peripheral),
@@ -36,13 +42,12 @@ pub enum BleRequest {
     ReadGattDescriptor(Descriptor),
 }
 
-
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
 enum EventSource {
     Bluetooth,
-    Poll,      // One second poll for re-trying connect until connected
-    Waker,     // On-demand state updates
-    UI,        // Requests from UI
+    Poll,  // One second poll for re-trying connect until connected
+    Waker, // On-demand state updates
+    UI,    // Requests from UI
 }
 
 #[derive(Debug, Clone)]
@@ -78,7 +83,29 @@ enum State {
     Idle,
     Scanning,
     Connected,
-    Connecting
+    Connecting,
+}
+
+pub struct BleServiceConfig {
+    #[cfg(target_os = "android")]
+    android_app: AndroidApp,
+    #[cfg(target_os = "android")]
+    pub companion_chooser_request_code: Option<u32>,
+}
+
+impl BleServiceConfig {
+    #[cfg(not(target_os = "android"))]
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn android_new(app: AndroidApp) -> Self {
+        Self {
+            android_app: app,
+            companion_chooser_request_code: None,
+        }
+    }
 }
 
 pub struct BleService {
@@ -92,69 +119,87 @@ struct ServiceImpl {
 }
 
 impl ServiceImpl {
-     fn new() -> Self {
-         Self {
-             state: State::Idle
-         }
-     }
-
+    fn new() -> Self {
+        Self { state: State::Idle }
+    }
 }
 
 impl BleService {
-    pub fn new(event_proxy: EventLoopProxy<crate::ui::Event>,
-               ui_requests: tokio::sync::mpsc::UnboundedReceiver<BleRequest>,
-               companion_chooser_request_code: Option<u32>) -> Self {
-
+    pub fn new(
+        event_proxy: EventLoopProxy<crate::ui::Event>,
+        ui_requests: tokio::sync::mpsc::UnboundedReceiver<BleRequest>, config: BleServiceConfig,
+    ) -> Self {
         let runtime = build_tokio_runtime().unwrap();
 
         let service_handle = thread::spawn(move || {
             let _guard = runtime.enter();
             let result = runtime.block_on(async move {
-                BleService::bluetooth_service(event_proxy, ui_requests, companion_chooser_request_code).await
+                BleService::bluetooth_service(event_proxy, ui_requests, config).await
             });
             warn!("Bluetooth Service Finished: {:?}", result);
             result
         });
 
-        BleService {
-            service_handle
-        }
+        BleService { service_handle }
     }
 
     // XXX: ideally this should probably be run as a proper Android Service
     #[allow(unused_variables)]
-    pub async fn bluetooth_service(event_proxy: EventLoopProxy<crate::ui::Event>,
+    async fn bluetooth_service(
+        event_proxy: EventLoopProxy<crate::ui::Event>,
         ui_requests: tokio::sync::mpsc::UnboundedReceiver<BleRequest>,
-        companion_chooser_request_code: Option<u32>) -> anyhow::Result<()> {
+        service_config: BleServiceConfig,
+    ) -> anyhow::Result<()> {
+        info!("Starting Bluetooth Service...");
 
-        debug!("Starting Bluetooth Service...");
-
-        #[cfg(target_os="android")]
+        #[cfg(target_os = "android")]
         let session = {
-            let ctx = ndk_context::android_context();
-            let jvm_ptr = ctx.vm();
-            let jvm = unsafe { jni::JavaVM::from_raw(jvm_ptr.cast()).expect("Expected to find JVM via ndk_context crate") };
-            let activity_ptr = ctx.context();
-            //let activity = ;
-            let activity = unsafe { jni::objects::JObject::from_raw(activity_ptr as jni::sys::jobject) };
-            //let activity = env.new_global_ref()?;
-            let env = jvm.attach_current_thread_permanently().unwrap();
+            use jni::objects::JObject;
+            use jni::refs::Global;
+            use jni::vm::JavaVM;
 
-            //env: jni::JNIEnv<'a>,
-            //                        activity: jni::objects::JObject<'a>,
-            //                        companion_chooser_request_code: Option<u32>) -> Result<BluetoothSession, Box<dyn std::error::Error>> {
-            //let android_config = session::AndroidConfig::new(env, context);
-            let config = session::SessionConfig::android_new(env, activity, companion_chooser_request_code);
+            let jvm = JavaVM::singleton().unwrap();
+            let config = jvm
+                .attach_current_thread(|env| -> jni::errors::Result<_> {
+                    let activity_raw =
+                        service_config.android_app.activity_as_ptr() as jni::sys::jobject;
+                    // SAFETY: We trust that `activity_raw` is a valid global reference, as documented
+                    let activity =
+                        unsafe { env.as_cast_raw::<Global<JObject>>(&activity_raw).unwrap() };
+                    let activity = env
+                        .new_global_ref(&activity)
+                        .expect("Failed to create global reference for activity");
+                    Ok(session::SessionConfig::android_new(
+                        jvm.clone(),
+                        activity,
+                        service_config.companion_chooser_request_code,
+                    ))
+                })
+                .unwrap();
+
             config.start().await?
         };
 
-        #[cfg(not(target_os="android"))]
+        #[cfg(not(target_os = "android"))]
         let session = bluey::session::SessionConfig::new().start().await?;
+
+        // Send session capabilities and permissions to UI
+        let supports_scanning = session.supports_scanning();
+        let supports_select_peripheral = session.supports_select_peripheral();
+
+        let has_scan_permission = session.has_scan_permission();
+        let has_connect_permission = session.has_connect_permission();
+
+        let _ = event_proxy.send_event(crate::ui::Event::SessionInfo {
+            supports_scanning,
+            supports_select_peripheral,
+            has_scan_permission,
+            has_connect_permission,
+        });
 
         //let scanner = session.start_scanning(filter)
         //let scanner = bluetooth_scanner_new(runtime, session);
         let events = session.events()?;
-
 
         let mut mainloop = StreamMap::new();
 
@@ -185,7 +230,7 @@ impl BleService {
 
         // Scan for a heart rate monitor to connect to...
         //
-        log::debug!("Waiting for bluetooth events...");
+        debug!("Waiting for bluetooth events...");
         while let Some((_, event)) = mainloop.next().await {
             debug!("Bluetooth Service Event: {:?}", event);
             match event {
@@ -216,6 +261,83 @@ impl BleService {
                                 }
                             }
                         }
+                        BleRequest::SelectDevice => {
+                            match state {
+                                State::Idle => {
+                                    if session.supports_select_peripheral() {
+                                        debug!("Starting device selection...");
+                                        let filter = session::Filter::new();
+                                        // Note: This will show the companion device chooser
+                                        match session.select_peripheral(filter).await {
+                                            Ok(_) => {
+                                                // Device selection started successfully
+                                                // The actual result will come via events
+                                            }
+                                            Err(err) => {
+                                                let _ =
+                                                    event_proxy.send_event(ui::Event::ShowText(
+                                                        Level::Warn,
+                                                        format!("Device selection: {:#?}", err),
+                                                    ));
+                                            }
+                                        }
+                                    } else {
+                                        let _ = event_proxy.send_event(ui::Event::ShowText(
+                                            Level::Warn,
+                                            "Device selection not supported on this platform"
+                                                .to_string(),
+                                        ));
+                                    }
+                                }
+                                _ => {
+                                    error!("Can only start device selection when idle");
+                                }
+                            }
+                        }
+                        BleRequest::RequestScanConnectPermission => {
+                            #[cfg(target_os = "android")]
+                            {
+                                use jni::objects::JObject;
+                                use jni::refs::Global;
+                                //debug!("Permission request requested - not implemented yet");
+                                let _ = event_proxy.send_event(ui::Event::ShowText(
+                                    Level::Info,
+                                    "Permission request functionality not implemented yet"
+                                        .to_string(),
+                                ));
+                                let vm = JavaVM::singleton().unwrap();
+                                let result =
+                                    vm.attach_current_thread(|env| -> jni::errors::Result<_> {
+                                        use jni::{jni_sig, jni_str};
+
+                                        let activity: jni::sys::jobject =
+                                            service_config.android_app.activity_as_ptr().cast();
+                                        let activity = unsafe {
+                                            env.as_cast_raw::<Global<JObject>>(&activity)?
+                                        };
+
+                                        let value = env.call_method(
+                                            &activity,
+                                            jni_str!("requestBluetoothScanConnectPermission"),
+                                            jni_sig!("()V"),
+                                            &[],
+                                        )?;
+                                        Ok(())
+                                    });
+                                if let Err(err) = result {
+                                    let _ = event_proxy.send_event(ui::Event::ShowText(
+                                        Level::Error,
+                                        format!("Failed to request permission: {:#?}", err),
+                                    ));
+                                }
+                            }
+                            #[cfg(not(target_os = "android"))]
+                            {
+                                warn!(
+                                    "Requesting scan permission on non-Android platform - ignoring"
+                                );
+                            }
+                        }
                         BleRequest::Connect(peripheral) => {
                             debug!("Ble: request connect...");
                             if state == State::Scanning {
@@ -226,9 +348,12 @@ impl BleService {
                             match peripheral.connect().await {
                                 Ok(()) => {
                                     state = State::Connecting;
-                                },
+                                }
                                 Err(err) => {
-                                    let _ = event_proxy.send_event(ui::Event::ShowText(Level::Error, format!("Failed to connect: {:#?}", err)));
+                                    let _ = event_proxy.send_event(ui::Event::ShowText(
+                                        Level::Error,
+                                        format!("Failed to connect: {:#?}", err),
+                                    ));
                                 }
                             }
                         }
@@ -240,77 +365,114 @@ impl BleService {
                         }
                         BleRequest::DiscoverGattServices(peripheral) => {
                             if let Err(err) = peripheral.discover_services(None).await {
-                                let _ = event_proxy.send_event(ui::Event::ShowText(Level::Error, format!("Couldn't initiate service discovery: {:#?}", err)));
+                                let _ = event_proxy.send_event(ui::Event::ShowText(
+                                    Level::Error,
+                                    format!("Couldn't initiate service discovery: {:#?}", err),
+                                ));
                             }
                         }
                         BleRequest::DiscoverGattIncludes(service) => {
                             if let Err(err) = service.discover_included_services().await {
-                                let _ = event_proxy.send_event(ui::Event::ShowText(Level::Error, format!("Couldn't initiate service includes discovery: {:#?}", err)));
+                                let _ = event_proxy.send_event(ui::Event::ShowText(
+                                    Level::Error,
+                                    format!(
+                                        "Couldn't initiate service includes discovery: {:#?}",
+                                        err
+                                    ),
+                                ));
                             }
                         }
                         BleRequest::DiscoverGattCharacteristics(service) => {
                             if let Err(err) = service.discover_characteristics().await {
-                                let _ = event_proxy.send_event(ui::Event::ShowText(Level::Error, format!("Couldn't initiate characteristic discovery: {:#?}", err)));
+                                let _ = event_proxy.send_event(ui::Event::ShowText(
+                                    Level::Error,
+                                    format!(
+                                        "Couldn't initiate characteristic discovery: {:#?}",
+                                        err
+                                    ),
+                                ));
                             }
                         }
                         BleRequest::DiscoverGattDescriptors(characteristic) => {
                             debug!("Calling characteristic.discover_descriptors()... (c={characteristic:?}");
                             if let Err(err) = characteristic.discover_descriptors().await {
-                                let _ = event_proxy.send_event(ui::Event::ShowText(Level::Error, format!("Couldn't initiate descriptor discovery: {:#?}", err)));
+                                let _ = event_proxy.send_event(ui::Event::ShowText(
+                                    Level::Error,
+                                    format!("Couldn't initiate descriptor discovery: {:#?}", err),
+                                ));
                             }
                         }
                         BleRequest::ReadGattCharacteristic(characteristic) => {
                             match characteristic.read_value(bluey::CacheMode::Uncached).await {
                                 Ok(value) => {
                                     debug!("Read Gatt Characteristic: {value:?}");
-                                    let _ = event_proxy.send_event(ui::Event::UpdateCharacteristicValue(characteristic, value));
+                                    let _ = event_proxy.send_event(
+                                        ui::Event::UpdateCharacteristicValue(characteristic, value),
+                                    );
                                 }
                                 Err(err) => {
-                                    let _ = event_proxy.send_event(ui::Event::ShowText(Level::Error, format!("Failed to read characteristic: {err:#?}")));
+                                    let _ = event_proxy.send_event(ui::Event::ShowText(
+                                        Level::Error,
+                                        format!("Failed to read characteristic: {err:#?}"),
+                                    ));
                                 }
                             }
                         }
                         BleRequest::SubscribeGattCharacteristic(characteristic) => {
                             debug!("Subscribing to characteristic");
                             if let Err(err) = characteristic.subscribe().await {
-                                let _ = event_proxy.send_event(ui::Event::ShowText(Level::Error, format!("Failed to subscribe to characteristic: {err:#?}")));
+                                let _ = event_proxy.send_event(ui::Event::ShowText(
+                                    Level::Error,
+                                    format!("Failed to subscribe to characteristic: {err:#?}"),
+                                ));
                             }
                         }
                         BleRequest::UnsubscribeGattCharacteristic(characteristic) => {
                             debug!("Unsubscribing to characteristic");
                             if let Err(err) = characteristic.unsubscribe().await {
-                                let _ = event_proxy.send_event(ui::Event::ShowText(Level::Error, format!("Failed to unsubscribe from characteristic: {err:#?}")));
+                                let _ = event_proxy.send_event(ui::Event::ShowText(
+                                    Level::Error,
+                                    format!("Failed to unsubscribe from characteristic: {err:#?}"),
+                                ));
                             }
                         }
                         BleRequest::ReadGattDescriptor(descriptor) => {
                             match descriptor.read_value(bluey::CacheMode::Uncached).await {
                                 Ok(value) => {
                                     debug!("Read Gatt Descriptor: {value:?}");
-                                    let _ = event_proxy.send_event(ui::Event::UpdateDescriptorValue(descriptor, value));
+                                    let _ = event_proxy.send_event(
+                                        ui::Event::UpdateDescriptorValue(descriptor, value),
+                                    );
                                 }
                                 Err(err) => {
-                                    let _ = event_proxy.send_event(ui::Event::ShowText(Level::Error, format!("Failed to read descriptor: {err:#?}")));
+                                    let _ = event_proxy.send_event(ui::Event::ShowText(
+                                        Level::Error,
+                                        format!("Failed to read descriptor: {err:#?}"),
+                                    ));
                                 }
                             }
                         }
                     }
                 }
-                Event::Update => {
-
-                }
+                Event::Update => {}
                 Event::BtEvent(event) => {
                     match &event {
                         bluey::Event::PeripheralFound { address, name, .. } => {
                             info!("Discovered peripheral: {} / {}", name, address.to_string());
                         }
-                        bluey::Event::PeripheralPropertyChanged { peripheral,
-                                                                property_id,
-                                                                .. } => {
+                        bluey::Event::PeripheralPropertyChanged {
+                            peripheral,
+                            property_id,
+                            ..
+                        } => {
                             if *property_id == PeripheralPropertyId::ServiceIds {
-                                info!("Got notified of new service IDs: {:?}",
-                                        peripheral.service_ids());
+                                info!(
+                                    "Got notified of new service IDs: {:?}",
+                                    peripheral.service_ids()
+                                );
                             }
-                            if hr_monitor.is_none() && *property_id == bluey::PeripheralPropertyId::ServiceIds
+                            if hr_monitor.is_none()
+                                && *property_id == bluey::PeripheralPropertyId::ServiceIds
                             {
                                 if peripheral.has_service_id(HEART_RATE_SERVICE_UUID) {
                                     info!("Found heart rate monitor");
@@ -363,13 +525,25 @@ impl BleService {
                     }
 
                     let _ = event_proxy.send_event(ui::Event::Ble(event));
-                },
+                }
             }
         }
 
-
-
         Ok(())
     }
+}
 
+#[cfg(target_os = "android")]
+#[allow(non_snake_case)]
+#[no_mangle]
+pub extern "system" fn Java_co_bluey_blueyui_MainActivity_onBluetoothScanPermissionResult<
+    'local,
+>(
+    _unowned_env: jni::EnvUnowned<'local>, _this: jni::objects::JObject<'local>,
+    granted: jni::sys::jboolean,
+) {
+    info!(
+        "Bluetooth Scan/Connect Permission Result: granted={}",
+        granted
+    );
 }

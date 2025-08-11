@@ -143,6 +143,8 @@ pub(crate) trait BackendSession {
     fn supports_scanning(&self) -> bool;
     fn supports_select_peripheral(&self) -> bool;
     fn supports_declare_peripheral(&self) -> bool;
+    fn has_scan_permission(&self) -> bool;
+    fn has_connect_permission(&self) -> bool;
 
     async fn start_scanning(&self, filter: &Filter) -> Result<()>;
     async fn stop_scanning(&self) -> Result<()>;
@@ -502,11 +504,10 @@ pub enum Backend {
 }
 
 #[cfg(target_os = "android")]
-pub(crate) struct AndroidConfig<'local> {
-    pub jni_env: jni::JNIEnv<'local>,
-    pub activity: jni::objects::JObject<'local>,
+pub(crate) struct AndroidConfig {
+    pub jvm: jni::JavaVM,
+    pub activity: jni::refs::Global<jni::objects::JObject<'static>>,
     pub companion_chooser_request_code: Option<u32>,
-    //lifetime: PhantomData<&'a ()>,
 }
 
 /*
@@ -534,7 +535,7 @@ pub struct SessionConfig<'a> {
     backend: Backend,
 
     #[cfg(target_os = "android")]
-    pub(crate) android: Option<AndroidConfig<'a>>,
+    pub(crate) android: Option<AndroidConfig>,
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     pub(crate) corebluetooth: CoreBluetoothConfig,
@@ -557,14 +558,14 @@ impl<'a> SessionConfig<'a> {
 
     #[cfg(target_os = "android")]
     pub fn android_new(
-        env: jni::JNIEnv<'a>, activity: jni::objects::JObject<'a>,
+        jvm: jni::JavaVM, activity: jni::refs::Global<jni::objects::JObject<'static>>,
         companion_chooser_request_code: Option<u32>,
     ) -> SessionConfig<'a> {
         SessionConfig {
             backend: Backend::SystemDefault,
 
             android: Some(AndroidConfig {
-                jni_env: env,
+                jvm,
                 activity,
                 companion_chooser_request_code,
             }),
@@ -1799,6 +1800,25 @@ impl Session {
 
     pub fn supports_declare_peripheral(&self) -> bool {
         self.backend.api().supports_declare_peripheral()
+    }
+
+    /// Check if the application has permission to scan for Bluetooth devices.
+    ///
+    /// Returns true on platforms where no explicit permission is required (Windows, Linux).
+    /// Returns false on Web platform.
+    ///
+    /// On Android, returns the actual permission status by querying the platform.
+    pub fn has_scan_permission(&self) -> bool {
+        self.backend.api().has_scan_permission()
+    }
+
+    /// Check if the application has permission to connect to Bluetooth devices.
+    ///
+    /// Returns true on platforms where no explicit permission is required (Windows, Linux).
+    ///
+    /// On Android, returns the actual permission status by querying the platform.
+    pub fn has_connect_permission(&self) -> bool {
+        self.backend.api().has_connect_permission()
     }
 
     /// Starts scanning for Bluetooth devices, according to the given filter

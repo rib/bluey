@@ -95,6 +95,9 @@ impl BackendSession for WebSession {
     fn supports_declare_peripheral(&self) -> bool {
         false
     }
+    fn has_scan_permission(&self) -> bool {
+        false // Web platform doesn't support scanning
+    }
 
     async fn start_scanning(&self, filter: &Filter) -> Result<()> {
         Err(Error::Unsupported)

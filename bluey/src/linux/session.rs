@@ -91,9 +91,9 @@ impl LinuxSession {
     pub async fn new(
         config: &SessionConfig<'_>, backend_bus: mpsc::UnboundedSender<BackendEvent>,
     ) -> Result<Self> {
-        let session = bluer::Session::new().await?;
-        let adapter = session.default_adapter().await?;
-        adapter.set_powered(true).await?;
+        let session = bluer::Session::new().await.map_err(|e| Error::Unavailable(crate::State::Unknown(Some(format!("Failed to connect to Bluetooth daemon: {}", e)))))?;
+        let adapter = session.default_adapter().await.map_err(|e| Error::Unavailable(crate::State::Unsupported(Some(format!("Failed to get default adapter: {}", e)))))?;
+        adapter.set_powered(true).await.map_err(|e| Error::Unavailable(crate::State::Unsupported(Some(format!("Failed to power on adapter: {}", e)))))?;
 
         Ok(LinuxSession {
             inner: Arc::new(LinuxSessionInner {
@@ -222,6 +222,12 @@ impl BackendSession for LinuxSession {
     }
     fn supports_declare_peripheral(&self) -> bool {
         true
+    }
+    fn has_scan_permission(&self) -> bool {
+        true // Linux doesn't require explicit scan permissions
+    }
+    fn has_connect_permission(&self) -> bool {
+        true // Linux doesn't require explicit connect permissions
     }
 
     async fn start_scanning(&self, filter: &Filter) -> Result<()> {

@@ -1,5 +1,6 @@
-package co.bluey;
+package io.github.bluey_project.bluey;
 
+import io.github.jni_rs.jbindgen.RustName;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
@@ -28,6 +29,11 @@ import android.os.Build;
 import android.os.Looper;
 import android.os.ParcelUuid;
 import android.util.Log;
+import android.content.pm.PackageManager;
+
+import androidx.annotation.RequiresPermission;
+import androidx.core.content.ContextCompat;
+import android.Manifest;
 
 //import androidx.annotation.RequiresApi;
 
@@ -146,6 +152,11 @@ public class BleSession /*implements Closeable*/ {
 
     //@RequiresApi(api = Build.VERSION_CODES.O)
     private void startScanViaCompanionAPI() {
+        if (BleSession.scannerSession != null) {
+            Log.d("BleSession", "Cannot scan from multiple bluetooth sessions in parallel");
+            throw new IllegalStateException("Cannot scan from multiple bluetooth sessions in parallel");
+        }
+
         CompanionDeviceManager deviceManager =
                 (CompanionDeviceManager) this.activity.get().getSystemService(
                         Context.COMPANION_DEVICE_SERVICE
@@ -180,6 +191,8 @@ public class BleSession /*implements Closeable*/ {
                 .build();
         Log.d("BleSession", "built association request");
 
+        BleSession.scannerSession = this;
+
         Log.d("BleSession", "Calling deviceManager.associate()...");
         // When the app tries to pair with the Bluetooth device, show the
         // appropriate pairing request dialog to the user.
@@ -200,11 +213,13 @@ public class BleSession /*implements Closeable*/ {
                     @Override
                     public void onFailure(CharSequence error) {
                         Log.d("BleSession", "Failed to find companion device");
+                        BleSession.scannerSession = null;
                         // handle failure to find the companion device
                     }
                 }, null);
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     public static void onCompanionChooserResult(int resultCode, Intent data) {
         BluetoothDevice device = data.getParcelableExtra(
                 CompanionDeviceManager.EXTRA_DEVICE
@@ -214,9 +229,10 @@ public class BleSession /*implements Closeable*/ {
             Log.d("BleSession", "BLE: Found device!");
             if (BleSession.scannerSession != null) {
                 BleSession session = BleSession.scannerSession;
+                BleSession.scannerSession = null;
                 long nativeSession = session.getNativeSessionHandle();
                 String address = device.getAddress();
-                @SuppressLint("MissingPermission") String name = device.getName();
+                String name = device.getName();
                 session.onCompanionDeviceSelect(nativeSession, device, address, name);
             } else {
                 Log.d("BleSession", "BLE: Got companion result with no active scanner session");
@@ -231,33 +247,7 @@ public class BleSession /*implements Closeable*/ {
     private ScanSettings.Builder scannerSettingsBuilder = null;
     private List<ScanFilter> scannerFilters = new ArrayList<>();
 
-    @SuppressLint("MissingPermission")
-    private void startScanDirect() {
-        scanner = adapter.getBluetoothLeScanner();
-
-        BleSession session = this;
-
-        scannerCallback = new ScanCallback() {
-            @Override
-            public void onScanResult(int callbackType, ScanResult result) {
-                BluetoothDevice device = result.getDevice();
-                String address = device.getAddress();
-                session.onScanResult(sessionHandle, callbackType, result, address);
-            }
-        };
-
-        //List<ScanFilter> filters = new ArrayList<>();
-        //ScanFilter filter = new ScanFilter.Builder()
-        //        .build();
-        //filters.add(filter);
-        // TODO: support building filters
-
-
-        //ScanSettings settings = new ScanSettings.Builder()
-        //        .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-        //        .build();
-        scanner.startScan(scannerFilters, scannerSettingsBuilder.build(), scannerCallback);
-    }
+    // This method has been inlined into startScanning() - removed to avoid confusion
 
     public void scannerConfigReset() throws Exception {
         if (BleSession.scannerSession != null) {
@@ -275,9 +265,38 @@ public class BleSession /*implements Closeable*/ {
         scannerFilters.add(filter);
     }
 
+    // Public API: Check if BLUETOOTH_SCAN permission is granted (Android 12+)
+    public boolean checkBluetoothScanPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return ContextCompat.checkSelfPermission(this.activity.get(),
+                Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED;
+        }
+        return true; // Permission not required for older Android versions
+    }
+
+    // Public API: Check if BLUETOOTH_CONNECT permission is granted (Android 12+)
+    public boolean checkBluetoothConnectPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return ContextCompat.checkSelfPermission(this.activity.get(),
+                Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
+        }
+        return true; // Permission not required for older Android versions
+    }
+
+    // Note: Permission requesting has been moved to MainActivity
+    // Use MainActivity.checkBluetoothScanPermission() and MainActivity.requestBluetoothScanPermission()
+
+    // Scan result status constants
+    public static final int SCAN_STATUS_SUCCESS = 0;
+    public static final int SCAN_STATUS_PERMISSION_DENIED = 1;
+    public static final int SCAN_STATUS_ALREADY_SCANNING = 2;
+    public static final int SCAN_STATUS_BLUETOOTH_UNAVAILABLE = 3;
+
     // Note: It's expected that scannerConfigReset() is called and any filter
     // settings are specified before calling startScanning()
-    public void startScanning() throws Exception {
+    // Returns status code indicating success or failure reason
+    @SuppressLint("MissingPermission")
+    public int startScanning() {
         Log.d("BleSession", "startScanning");
         if (Looper.getMainLooper().isCurrentThread()) {
             Log.d("BleSession", "scanning on main UI thread");
@@ -286,16 +305,74 @@ public class BleSession /*implements Closeable*/ {
         }
 
         if (BleSession.scannerSession != null) {
-            throw new Exception("Can't scan from multiple bluetooth sessions in parallel");
+            Log.d("BleSession", "Cannot scan from multiple bluetooth sessions in parallel");
+            return SCAN_STATUS_ALREADY_SCANNING;
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && COMPANION_CHOOSER_REQUEST_CODE >= 0) {
+        // Check for BLUETOOTH_SCAN permission before starting scan
+        if (!checkBluetoothScanPermission()) {
+            Log.d("BleSession", "BLUETOOTH_SCAN permission not granted");
+            return SCAN_STATUS_PERMISSION_DENIED;
+        }
+
+        try {
+            scanner = adapter.getBluetoothLeScanner();
+
+            // TODO: gracefully handle any failure to find an adapter here!
+            // (E.g. due to the Bluetooth being disabled on the Android device)
+            if (scanner == null) {
+                Log.e("BleSession", "Failed to get BluetoothLeScanner");
+                return SCAN_STATUS_BLUETOOTH_UNAVAILABLE;
+            }
+
+            BleSession session = this;
+
+            scannerCallback = new ScanCallback() {
+                @Override
+                public void onScanResult(int callbackType, ScanResult result) {
+                    BluetoothDevice device = result.getDevice();
+                    String address = device.getAddress();
+                    session.onScanResult(sessionHandle, callbackType, result, address);
+                }
+            };
+
+            scanner.startScan(scannerFilters, scannerSettingsBuilder.build(), scannerCallback);
+            BleSession.scannerSession = this;
+
+            return SCAN_STATUS_SUCCESS;
+        } catch (Exception e) {
+            Log.e("BleSession", "Error starting scan", e);
+            scanner = null;
+            BleSession.scannerSession = null;
+            return SCAN_STATUS_BLUETOOTH_UNAVAILABLE;
+        }
+    }
+
+    // Device selection status constants
+    public static final int SELECT_DEVICE_STATUS_SUCCESS = 0;
+    public static final int SELECT_DEVICE_STATUS_UNSUPPORTED = 1;
+    public static final int SELECT_DEVICE_STATUS_ERROR = 2;
+
+    // Select a device using the Companion Device API
+    // This is separate from scanning and shows a device picker dialog
+    public int selectDevice() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            Log.e("BleSession", "Companion API not supported on this Android version");
+            return SELECT_DEVICE_STATUS_UNSUPPORTED;
+        }
+
+        if (COMPANION_CHOOSER_REQUEST_CODE < 0) {
+            Log.e("BleSession", "Companion chooser request code not set");
+            return SELECT_DEVICE_STATUS_UNSUPPORTED;
+        }
+
+        try {
             startScanViaCompanionAPI();
-        } else {
-            startScanDirect();
+            return SELECT_DEVICE_STATUS_SUCCESS;
+        } catch (Exception e) {
+            Log.e("BleSession", "Error starting device selection", e);
+            return SELECT_DEVICE_STATUS_ERROR;
         }
-
-        BleSession.scannerSession = this;
     }
 
     @SuppressLint("MissingPermission")

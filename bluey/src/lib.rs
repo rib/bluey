@@ -505,10 +505,10 @@ pub enum State {
     Unauthorized,
 
     /// The system doesn't support bluetooth access
-    Unsupported,
+    Unsupported(Option<String>),
 
     /// The system is in an unknown (transitioning) state - wait for a state change event.
-    Unknown,
+    Unknown(Option<String>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -528,7 +528,7 @@ pub enum Error {
     #[error("The system doesn't support this request / operation")]
     Unsupported,
 
-    #[error("Bluetooth is currently in a state that makes it unavailable")]
+    #[error("Bluetooth is currently in a state that makes it unavailable: {0:?}")]
     Unavailable(State),
 
     #[error(transparent)]

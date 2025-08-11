@@ -1,11 +1,14 @@
 #![allow(unused)]
 
-use const_format::concatcp;
 use core::fmt;
+use jni::refs::LoaderContext;
+use jni::signature::MethodSignature;
+use jni::strings::{JNIStr, JNIString};
+use jni::EnvUnowned;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::ffi::c_void;
+use std::ffi::{c_void, CStr};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -25,7 +28,10 @@ use function_name::named;
 
 use dashmap::DashMap;
 
-use jni::{sys::*, NativeMethod};
+use jni::{
+    sys::{jboolean, jint, jlong, jvalue},
+    JNIVersion, NativeMethod,
+};
 use tokio::sync::{broadcast, mpsc, mpsc::UnboundedSender};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_stream::wrappers::{BroadcastStream, UnboundedReceiverStream};
@@ -34,13 +40,14 @@ use anyhow::anyhow;
 use log::{debug, error, info, trace, warn};
 
 use crate::android::jni::*;
-use jni::objects::{GlobalRef, JClass, JList, JMethodID, JObject, JString, JValue, JByteArray};
-use jni::JNIEnv;
+use jni::objects::{Global, JByteArray, JClass, JList, JMethodID, JObject, JString, JValue};
+use jni::Env;
+use jni::{jni_sig, jni_str};
 use uuid::Uuid;
 
 use crate::characteristic::{CharacteristicProperties, WriteType};
 use crate::service::Service;
-use crate::session::{BackendSession, Filter, Session, SessionConfig, AndroidConfig};
+use crate::session::{AndroidConfig, BackendSession, Filter, Session, SessionConfig};
 use crate::{characteristic, peripheral, try_u64_from_mac48_str, DescriptorHandle, GattError};
 use crate::{
     fake, uuid::BluetoothUuid, AddressType, BackendPeripheralProperty, Error, MacAddressType,
@@ -49,15 +56,93 @@ use crate::{
 use crate::{Address, MAC};
 use crate::{BackendEvent, CacheMode, CharacteristicHandle, PeripheralHandle, ServiceHandle};
 
+// Java scan status constants (must match BleSession.java)
+const SCAN_STATUS_SUCCESS: i32 = 0;
+const SCAN_STATUS_PERMISSION_DENIED: i32 = 1;
+const SCAN_STATUS_ALREADY_SCANNING: i32 = 2;
+const SCAN_STATUS_BLUETOOTH_UNAVAILABLE: i32 = 3;
+
+// Java select device status constants (must match BleSession.java)
+const SELECT_DEVICE_STATUS_SUCCESS: i32 = 0;
+const SELECT_DEVICE_STATUS_UNSUPPORTED: i32 = 1;
+const SELECT_DEVICE_STATUS_ERROR: i32 = 2;
+
 // NB usefull references:
 // https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android10-release/core/java/android/bluetooth/BluetoothGatt.java
 // https://android.googlesource.com/platform/packages/apps/Bluetooth/+/refs/heads/android10-mainline-release/src/com/android/bluetooth/gatt/GattService.java
 
 static REGISTER_NATIVE_METHODS: Once = Once::new();
 
-const BLE_SESSION_CLASS_NAME: &str = "co.bluey.BleSession";
-const BLE_DEVICE_CLASS_NAME: &str = "co.bluey.BleDevice";
-const BLE_DEVICE_JNI_TYPE: &str = "Lco/bluey/BleDevice;";
+const ANDROID_BLE_DEVICE_CLASS_NAME: &JNIStr = jni_str!("android.bluetooth.BluetoothDevice");
+
+const BLE_SESSION_CLASS_NAME: &JNIStr = jni_str!("co.bluey.BleSession");
+const BLE_DEVICE_CLASS_NAME: &JNIStr = jni_str!("co.bluey.BleDevice");
+
+jni::bind_java_type! { BleDevice => "co.bluey.BleDevice" }
+jni::bind_java_type! {  BleSession => "co.bluey.BleSession" }
+
+jni::bind_java_type! { ABluetoothGattService => "android.bluetooth.BluetoothGattService" }
+jni::bind_java_type! { ABluetoothGattDescriptor => "android.bluetooth.BluetoothGattDescriptor" }
+jni::bind_java_type! { ABluetoothGattCharacteristic => "android.bluetooth.BluetoothGattCharacteristic" }
+
+macro_rules! bluey_sig {
+    ($($tt:tt)*) => {
+        jni::jni_sig! {
+            type_map {
+                unsafe AndroidSessionHandle => jlong,
+                BleDevice => "co.bluey.BleDevice",
+                BleSession => "co.bluey.BleSession",
+                ABluetoothGattService => "android.bluetooth.BluetoothGattService",
+                ABluetoothGattDescriptor => "android.bluetooth.BluetoothGattDescriptor",
+                ABluetoothGattCharacteristic => "android.bluetooth.BluetoothGattCharacteristic",
+            },
+            $($tt)*
+        }
+    };
+}
+
+/// A workaround Send wrapper around a `Global<JObject<'static>>`
+///
+/// It must surely be a compiler bug that this is required because
+/// Global<JObject<'static>> already implements Send + Sync but in the
+/// context of spawning a tokio task, with a given Global, the compiler can
+/// give a spurious error:
+///
+/// ```text
+///   error: implementation of `std::marker::Send` is not general enough
+///   = note: `JObject<'0>` must implement `std::marker::Send`, for any lifetime `'0`...
+///   = note: ...but `std::marker::Send` is actually implemented for the type `JObject<'static>`
+/// ```
+/// (even with very explicit `Global<JObject<'static>>` type annotations)
+///
+/// Maybe it's related to the compiler inserting some hidden inference variables?:
+/// https://github.com/rust-lang/rust/issues/96865#issuecomment-1134853187
+///
+/// I wasn't able to reproduce the issue here:
+/// https://play.rust-lang.org/?version=stable&mode=debug&edition=2024&gist=6b4de25ee17d91f61452e33502967eb0
+/// (in that case the wrapper is not needed)
+///
+/// We don't even need to explicitly implement Send since the compiler knows that
+/// here that `Global<JObject<'static>>` is Send + Sync, but this wrapper
+/// is enough to make the compiler happy.
+struct EnsureSendGlobalObject(pub Global<JObject<'static>>);
+// Double check that the Global<JObject<'static>> is Send
+const fn assert_send<T: Send>() {}
+const _: () = assert_send::<Global<JObject<'static>>>();
+const _: () = assert_send::<EnsureSendGlobalObject>();
+//unsafe impl Send for EnsureSendGlobalObject {}
+impl Deref for EnsureSendGlobalObject {
+    type Target = Global<JObject<'static>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl From<Global<JObject<'static>>> for EnsureSendGlobalObject {
+    fn from(value: Global<JObject<'static>>) -> Self {
+        EnsureSendGlobalObject(value)
+    }
+}
 
 impl From<jni::errors::Error> for Error {
     fn from(jerr: jni::errors::Error) -> Self {
@@ -205,14 +290,16 @@ impl From<i32> for AndroidBondState {
     }
 }
 
+type AndroidSessionHandle = JHandle<AndroidSession>;
+
 //#[derive(Debug)]
 pub(crate) struct AndroidSessionInner {
     jvm: Arc<jni::JavaVM>,
-    activity_ref: jni::objects::GlobalRef,
-    jsession: jni::objects::GlobalRef,
-    weak_handle: StdRwLock<JHandle<AndroidSession>>,
+    activity_ref: jni::objects::Global<JObject<'static>>,
+    jsession: jni::objects::Global<JObject<'static>>,
+    weak_handle: StdRwLock<AndroidSessionHandle>,
 
-    device_class: jni::objects::GlobalRef,
+    device_class: jni::objects::Global<JClass<'static>>,
 
     backend_bus: mpsc::UnboundedSender<BackendEvent>,
     peripheral_handles_by_mac: DashMap<u64, PeripheralHandle>,
@@ -226,6 +313,9 @@ pub(crate) struct AndroidSessionInner {
     // a method ID isn't an object managed by the GC)
     set_native_handle_method: JMethodID,
 
+    check_bluetooth_scan_permission_method: JMethodID,
+    check_bluetooth_connect_permission_method: JMethodID,
+    select_device_method: JMethodID,
     scanner_config_reset_method: JMethodID,
     scanner_config_add_service_uuid_method: JMethodID,
     start_scanning_method: JMethodID,
@@ -286,14 +376,20 @@ impl Drop for AndroidSessionInner {
         // Just in case there is anything asynchronous happening in Java that might
         // keep our Java BleSession alive longer than the native session we
         // explicitly detach the native handle...
-        if let Ok(mut jenv) = self.jvm.get_env() {
-            try_call_void_method(
-                &mut jenv,
-                &self.jsession,
-                self.set_native_handle_method,
-                &[jni::objects::JValue::Long(0).as_jni()],
-            );
-            debug!("Explicitly detached native handle from BleSession");
+        if let Err(err) = self
+            .jvm
+            .attach_current_thread_for_scope(|env| -> Result<_> {
+                try_call_void_method(
+                    env,
+                    &self.jsession,
+                    self.set_native_handle_method,
+                    &[jni::objects::JValue::Long(0).as_jni()],
+                );
+                debug!("Explicitly detached native handle from BleSession");
+                Ok(())
+            })
+        {
+            error!("Failed to detach native handle from BleSession: {}", err);
         }
 
         let weak_handle = *self.weak_handle.read().unwrap();
@@ -430,7 +526,7 @@ struct AndroidPeripheralState {
     address: u64,
 
     // Only used when an application explicitly connects to the peripheral...
-    ble_device: Option<GlobalRef>,
+    ble_device: Option<Global<JObject<'static>>>,
 
     // We we first instantiate a BleDevice in Java it doesn't have an associated
     // BluetoothGatt instance. It's only after we initiate a request to connect
@@ -447,7 +543,7 @@ struct AndroidPeripheralState {
     //
     // FIXME: switch this to a regular HashMap since we anyway have to lock
     // the peripheral inner to access
-    gatt_services: DashMap<ServiceHandle, GlobalRef>,
+    gatt_services: DashMap<ServiceHandle, Global<JObject<'static>>>,
 
     // Similar to services, it's possible for a characteristic to be instantiated
     // multiple times per service by a device so we differentiate them by their
@@ -458,9 +554,9 @@ struct AndroidPeripheralState {
     // services here. (The frontend will be tracking the connection between
     // characteristics and services - we just need to be able to lookup the
     // BluetoothGattCharacteristic for a given handle in the future)
-    gatt_characteristics: DashMap<CharacteristicHandle, GlobalRef>,
+    gatt_characteristics: DashMap<CharacteristicHandle, Global<JObject<'static>>>,
 
-    gatt_descriptors: DashMap<DescriptorHandle, GlobalRef>,
+    gatt_descriptors: DashMap<DescriptorHandle, Global<JObject<'static>>>,
 
     // Note: these are a clone of the .io state, so it's possible to send
     // IO requests or cancel the IO task from a synchronous context but
@@ -542,14 +638,14 @@ struct AndroidPeripheralInner {
     io: tokio::sync::Mutex<AndroidPeripheralIOTask>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct AndroidCharacteristic {
-    jcharacteristic: GlobalRef,
+    jcharacteristic: Global<JObject<'static>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct AndroidDescriptor {
-    jdescriptor: GlobalRef,
+    jdescriptor: Global<JObject<'static>>,
 }
 
 struct IOProcessorState {
@@ -573,14 +669,17 @@ struct IOProcessorState {
     pub skip_disconnect_on_quit: bool,
 }
 
-fn check_jni_exception(jenv: &mut JNIEnv) -> Result<()> {
-    if jenv.exception_check()? {
+fn check_jni_exception(jenv: &mut Env) -> Result<()> {
+    if let Some(throwable) = jenv.exception_occurred() {
         error!("Exception was thrown!");
-        let throwable = jenv.exception_occurred()?;
         jenv.exception_clear();
 
         let klass = jenv.get_object_class(&throwable)?;
-        let get_message_method = jenv.get_method_id(klass, "getMessage", "()Ljava/lang/String;")?;
+        let get_message_method = jenv.get_method_id(
+            klass,
+            jni_str!("getMessage"),
+            jni_sig!(c"()Ljava/lang/String;"),
+        )?;
 
         let message = try_call_string_method(jenv, &throwable, get_message_method, &[])?;
         if let Some(message) = message {
@@ -591,14 +690,15 @@ fn check_jni_exception(jenv: &mut JNIEnv) -> Result<()> {
     Ok(())
 }
 
-fn resolve_method_id(
-    jenv: &mut JNIEnv, klass: &JClass, name: &str, signature: &str,
+fn resolve_method_id<'sig, 'sig_args>(
+    jenv: &mut Env, klass: &JClass, name: impl AsRef<JNIStr>,
+    signature: impl AsRef<MethodSignature<'sig, 'sig_args>>,
 ) -> Result<JMethodID> {
-    trace!("Resolving method {name}...");
-    match jenv.get_method_id(klass, name, signature) {
+    trace!("Resolving method {}...", name.as_ref());
+    match jenv.get_method_id(klass, name.as_ref(), signature) {
         Ok(method_id) => Ok(method_id),
         Err(err) => {
-            error!("Failed to resolve method {name}");
+            error!("Failed to resolve method {}", name.as_ref());
             check_jni_exception(jenv)?;
             Err(Error::Other(anyhow!(err)))
         }
@@ -611,497 +711,547 @@ impl BleSessionNative {
     /// Whenever the user selects a device via the Companion API chooser UI then this callback is
     /// called to notify us of the selected device...
     #[named]
-    extern "C" fn on_companion_device_select(
-        mut env: JNIEnv,
-        session: JObject,
-        session_handle: JHandle<AndroidSession>, // (jlong wrapper)
-        device: JObject, // BluetoothDevice
-        address: JString,
-        name: JString,
+    extern "system" fn on_companion_device_select<'caller>(
+        mut unowned_env: EnvUnowned<'caller>,
+        session: JObject<'caller>,
+        //session_handle: jlong,
+        session_handle: AndroidSessionHandle, // (jlong wrapper)
+        device: JObject<'caller>,             // BluetoothDevice
+        address: JString<'caller>,
+        name: JString<'caller>,
     ) {
         debug!("Notify companion device, handle = {:?}", session_handle);
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<()> {
+                let result = if let Some(session) =
+                    unsafe { IntoJHandle::clone_from_weak_handle(session_handle) }
+                {
+                    (|| -> Result<()> {
+                        // Like a try{} block since the JNI func doesn't return Result
 
-        let result = if let Some(session) =
-            unsafe { IntoJHandle::clone_from_weak_handle(session_handle) }
-        {
-            (|| -> Result<()> {
-                // Like a try{} block since the JNI func doesn't return Result
+                        let address = address.to_string();
+                        let name = name.to_string();
 
-                let address = env
-                    .get_string(&address)?
-                    .to_str()
-                    .map_err(|err| {
-                        Error::Other(anyhow!("JNI: invalid utf8 for returned String: {:?}", err))
-                    })?
-                    .to_string();
+                        let _peripheral_handle =
+                            session.declare_peripheral(Address::String(address), name)?;
 
-                let name = env
-                    .get_string(&name)?
-                    .to_str()
-                    .map_err(|err| {
-                        Error::Other(anyhow!("JNI: invalid utf8 for returned String: {:?}", err))
-                    })?
-                    .to_string();
+                        Ok(())
+                    })() // call closure to catch Result
+                } else {
+                    Err(Error::Other(anyhow!(
+                        "Java callback failed to get native session from handle"
+                    )))
+                };
 
-                let _peripheral_handle =
-                    session.declare_peripheral(Address::String(address), name)?;
-
+                if let Err(err) = result {
+                    error!("Failed to handle companion device notification: {}", err);
+                    env.throw(format!("{err}"));
+                }
                 Ok(())
-            })() // call closure to catch Result
-        } else {
-            Err(Error::Other(anyhow!(
-                "Java callback failed to get native session from handle"
-            )))
-        };
-
-        if let Err(err) = result {
-            error!("Failed to handle companion device notification: {}", err);
-            env.throw(format!("{err}"));
-        }
+            })
+            .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
     }
 
     #[named]
-    extern "C" fn on_scan_result(
-        mut env: JNIEnv,
+    extern "system" fn on_scan_result(
+        mut unowned_env: EnvUnowned,
         session: JObject,
-        session_handle: JHandle<AndroidSession>, // (jlong wrapper)
+        session_handle: AndroidSessionHandle, // (jlong wrapper)
         callback_type: jint,
         scan_result: JObject,
         address: JString,
     ) {
         trace!("On Scan Result");
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<()> {
+                let result = if let Some(session) =
+                    unsafe { IntoJHandle::clone_from_weak_handle(session_handle) }
+                {
+                    (|| -> Result<()> {
+                        // Like a try{} block since the JNI func doesn't return Result
+                        let address_str = address.mutf8_chars(env)?;
+                        let address_str = address_str.to_str();
+                        let mac = match try_u64_from_mac48_str(&address_str) {
+                            Some(mac) => mac,
+                            None => {
+                                return Err(Error::Other(anyhow!(
+                                    "Spurious device address format: {}",
+                                    address_str
+                                )))
+                            }
+                        };
 
-        let result =
-            if let Some(session) = unsafe { IntoJHandle::clone_from_weak_handle(session_handle) } {
-                (|| -> Result<()> {
-                    // Like a try{} block since the JNI func doesn't return Result
-                    let address_str = env.get_string(&address)?;
-                    let address_str = address_str.to_str().map_err(|err| {
-                        Error::Other(anyhow!("JNI: invalid utf8 for returned String: {:?}", err))
-                    })?;
-                    let mac = match try_u64_from_mac48_str(address_str) {
-                        Some(mac) => mac,
-                        None => {
-                            return Err(Error::Other(anyhow!(
-                                "Spurious device address format: {}",
-                                address_str
-                            )))
+                        let peripheral_handle = session.peripheral_from_mac(mac)?;
+
+                        if let Some(local_name) = try_call_string_method(
+                            env,
+                            &session.jsession,
+                            session.scan_result_get_local_name_method,
+                            &[JValue::Object(&scan_result).as_jni()],
+                        )? {
+                            let _ = session
+                                .backend_bus
+                                .send(BackendEvent::PeripheralPropertySet {
+                                    peripheral_handle,
+                                    property: BackendPeripheralProperty::Name(local_name),
+                                });
                         }
-                    };
-
-                    let peripheral_handle = session.peripheral_from_mac(mac)?;
-
-                    if let Some(local_name) = try_call_string_method(
-                        &mut env,
-                        &session.jsession,
-                        session.scan_result_get_local_name_method,
-                        &[JValue::Object(&scan_result).as_jni()],
-                    )? {
+                        let tx_power = try_call_int_method(
+                            env,
+                            &session.jsession,
+                            session.scan_result_get_tx_power_method,
+                            &[JValue::Object(&scan_result).as_jni()],
+                        )?;
                         let _ = session
                             .backend_bus
                             .send(BackendEvent::PeripheralPropertySet {
                                 peripheral_handle,
-                                property: BackendPeripheralProperty::Name(local_name),
+                                property: BackendPeripheralProperty::TxPower(tx_power as i16),
                             });
-                    }
-                    let tx_power = try_call_int_method(
-                        &mut env,
-                        &session.jsession,
-                        session.scan_result_get_tx_power_method,
-                        &[JValue::Object(&scan_result).as_jni()],
-                    )?;
-                    let _ = session
-                        .backend_bus
-                        .send(BackendEvent::PeripheralPropertySet {
-                            peripheral_handle,
-                            property: BackendPeripheralProperty::TxPower(tx_power as i16),
-                        });
-                    let rssi = try_call_int_method(
-                        &mut env,
-                        &session.jsession,
-                        session.scan_result_get_rssi_method,
-                        &[JValue::Object(&scan_result).as_jni()],
-                    )?;
-                    let _ = session
-                        .backend_bus
-                        .send(BackendEvent::PeripheralPropertySet {
-                            peripheral_handle,
-                            property: BackendPeripheralProperty::Rssi(rssi as i16),
-                        });
+                        let rssi = try_call_int_method(
+                            env,
+                            &session.jsession,
+                            session.scan_result_get_rssi_method,
+                            &[JValue::Object(&scan_result).as_jni()],
+                        )?;
+                        let _ = session
+                            .backend_bus
+                            .send(BackendEvent::PeripheralPropertySet {
+                                peripheral_handle,
+                                property: BackendPeripheralProperty::Rssi(rssi as i16),
+                            });
 
-                    let n_service_uuids = try_call_int_method(
-                        &mut env,
-                        &session.jsession,
-                        session.scan_result_get_service_uuids_count_method,
-                        &[JValue::Object(&scan_result).as_jni()],
-                    )?;
-                    if n_service_uuids > 0 {
-                        let mut service_uuids = vec![];
-                        for i in 0..n_service_uuids {
-                            if let Some(service_uuid) = try_call_string_method(
-                                &mut env,
-                                &session.jsession,
-                                session.scan_result_get_nth_service_uuid_method,
-                                &[
-                                    JValue::Object(&scan_result).as_jni(),
-                                    JValue::Int(i).as_jni(),
-                                ],
-                            )? {
-                                if let Ok(uuid) = Uuid::parse_str(&service_uuid) {
-                                    service_uuids.push(uuid);
+                        let n_service_uuids = try_call_int_method(
+                            env,
+                            &session.jsession,
+                            session.scan_result_get_service_uuids_count_method,
+                            &[JValue::Object(&scan_result).as_jni()],
+                        )?;
+                        if n_service_uuids > 0 {
+                            let mut service_uuids = vec![];
+                            for i in 0..n_service_uuids {
+                                if let Some(service_uuid) = try_call_string_method(
+                                    env,
+                                    &session.jsession,
+                                    session.scan_result_get_nth_service_uuid_method,
+                                    &[
+                                        JValue::Object(&scan_result).as_jni(),
+                                        JValue::Int(i).as_jni(),
+                                    ],
+                                )? {
+                                    if let Ok(uuid) = Uuid::parse_str(&service_uuid) {
+                                        service_uuids.push(uuid);
+                                    }
                                 }
                             }
-                        }
 
-                        if !service_uuids.is_empty() {
-                            let _ = session
-                                .backend_bus
-                                .send(BackendEvent::PeripheralPropertySet {
-                                    peripheral_handle,
-                                    property: BackendPeripheralProperty::ServiceIds(service_uuids),
-                                });
-                        }
-                    }
-
-                    let n = try_call_int_method(
-                        &mut env,
-                        &session.jsession,
-                        session.scan_result_get_specific_manufacturer_data_count_method,
-                        &[JValue::Object(&scan_result).as_jni()],
-                    )?;
-                    if n > 0 {
-                        let mut data_map = HashMap::new();
-                        for i in 0..n {
-                            let manfacturer_id = try_call_int_method(
-                                &mut env,
-                                &session.jsession,
-                                session.scan_result_get_specific_manufacturer_data_id_method,
-                                &[
-                                    JValue::Object(&scan_result).as_jni(),
-                                    JValue::Int(i).as_jni(),
-                                ],
-                            )? as u16;
-                            let data = try_call_object_method(
-                                &mut env,
-                                &session.jsession,
-                                session.scan_result_get_specific_manufacturer_data_method,
-                                &[
-                                    JValue::Object(&scan_result).as_jni(),
-                                    JValue::Int(i).as_jni(),
-                                ],
-                            )?;
-                            let data = unsafe { JByteArray::from_raw(data.as_raw()) };
-                            if !data.is_null() {
-                                let data_vec = env.convert_byte_array(&data)?;
-                                data_map.insert(manfacturer_id, data_vec);
+                            if !service_uuids.is_empty() {
+                                let _ =
+                                    session
+                                        .backend_bus
+                                        .send(BackendEvent::PeripheralPropertySet {
+                                            peripheral_handle,
+                                            property: BackendPeripheralProperty::ServiceIds(
+                                                service_uuids,
+                                            ),
+                                        });
                             }
                         }
-                        if !data_map.is_empty() {
-                            let _ = session
-                                .backend_bus
-                                .send(BackendEvent::PeripheralPropertySet {
-                                    peripheral_handle,
-                                    property: BackendPeripheralProperty::ManufacturerData(data_map),
-                                });
+
+                        let n = try_call_int_method(
+                            env,
+                            &session.jsession,
+                            session.scan_result_get_specific_manufacturer_data_count_method,
+                            &[JValue::Object(&scan_result).as_jni()],
+                        )?;
+                        if n > 0 {
+                            let mut data_map = HashMap::new();
+                            for i in 0..n {
+                                let manfacturer_id = try_call_int_method(
+                                    env,
+                                    &session.jsession,
+                                    session.scan_result_get_specific_manufacturer_data_id_method,
+                                    &[
+                                        JValue::Object(&scan_result).as_jni(),
+                                        JValue::Int(i).as_jni(),
+                                    ],
+                                )? as u16;
+                                let data = try_call_object_method(
+                                    env,
+                                    &session.jsession,
+                                    session.scan_result_get_specific_manufacturer_data_method,
+                                    &[
+                                        JValue::Object(&scan_result).as_jni(),
+                                        JValue::Int(i).as_jni(),
+                                    ],
+                                )?;
+                                let data = unsafe { JByteArray::from_raw(env, data.as_raw()) };
+                                if !data.is_null() {
+                                    let data_vec = env.convert_byte_array(&data)?;
+                                    data_map.insert(manfacturer_id, data_vec);
+                                }
+                            }
+                            if !data_map.is_empty() {
+                                let _ =
+                                    session
+                                        .backend_bus
+                                        .send(BackendEvent::PeripheralPropertySet {
+                                            peripheral_handle,
+                                            property: BackendPeripheralProperty::ManufacturerData(
+                                                data_map,
+                                            ),
+                                        });
+                            }
                         }
-                    }
 
-                    Ok(())
-                })()
-            } else {
-                Err(Error::Other(anyhow!(
-                    "Java callback failed to get native session from handle"
-                )))
-            };
+                        Ok(())
+                    })()
+                } else {
+                    Err(Error::Other(anyhow!(
+                        "Java callback failed to get native session from handle"
+                    )))
+                };
 
-        if let Err(err) = result {
-            error!("Failed to handle scan result: {:?}", err);
-        }
+                if let Err(err) = result {
+                    error!("Failed to handle scan result: {:?}", err);
+                }
+                Ok(())
+            })
+            .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
     }
 
     #[named]
-    extern "C" fn on_device_connection_state_change(
-        mut env: JNIEnv,
+    extern "system" fn on_device_connection_state_change(
+        mut unowned_env: EnvUnowned,
         session: JObject,
-        session_handle: JHandle<AndroidSession>, // (jlong wrapper)
-        device_handle: jlong,                    // u32 peripheral handle
+        session_handle: AndroidSessionHandle, // (jlong wrapper)
+        device_handle: jlong,                 // u32 peripheral handle
         connected: jboolean,
         status: jint,
     ) {
-        notify_io_callback_from_jni(
-            &mut env,
-            session_handle,
-            device_handle,
-            function_name!(),
-            |env, session, peripheral_handle| {
-                let status = map_gatt_status(status, true);
-                let connected = connected != 0;
-                Ok(IOCmd::ConnectionStatusNotify { connected, status })
-            },
-        );
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<()> {
+                notify_io_callback_from_jni(
+                    env,
+                    session_handle,
+                    device_handle,
+                    function_name!(),
+                    |env, session, peripheral_handle| {
+                        let status = map_gatt_status(status, true);
+                        Ok(IOCmd::ConnectionStatusNotify { connected, status })
+                    },
+                );
+                Ok(())
+            })
+            .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
     }
 
     #[named]
-    extern "C" fn on_device_bonding_state_change(
-        mut env: JNIEnv,
+    extern "system" fn on_device_bonding_state_change(
+        mut unowned_env: EnvUnowned,
         session: JObject,
-        session_handle: JHandle<AndroidSession>, // (jlong wrapper)
-        device_handle: jlong,                    // u32 peripheral handle
+        session_handle: AndroidSessionHandle, // (jlong wrapper)
+        device_handle: jlong,                 // u32 peripheral handle
         prev_state: jint,
         new_state: jint,
     ) {
-        notify_io_callback_from_jni(
-            &mut env,
-            session_handle,
-            device_handle,
-            function_name!(),
-            |env, session, peripheral_handle| {
-                let bond_state = AndroidBondState::from(new_state);
-                Ok(IOCmd::BondingStateNotify { bond_state })
-            },
-        );
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<()> {
+                notify_io_callback_from_jni(
+                    env,
+                    session_handle,
+                    device_handle,
+                    function_name!(),
+                    |env, session, peripheral_handle| {
+                        let bond_state = AndroidBondState::from(new_state);
+                        Ok(IOCmd::BondingStateNotify { bond_state })
+                    },
+                );
+                Ok(())
+            })
+            .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
     }
 
     #[named]
-    extern "C" fn on_device_services_discovered(
-        mut env: JNIEnv,
+    extern "system" fn on_device_services_discovered(
+        mut unowned_env: EnvUnowned,
         session: JObject,
-        session_handle: JHandle<AndroidSession>, // (jlong wrapper)
-        device_handle: jlong,                    // u32 peripheral handle
+        session_handle: AndroidSessionHandle, // (jlong wrapper)
+        device_handle: jlong,                 // u32 peripheral handle
         status: jint,
     ) {
-        notify_io_callback_from_jni(
-            &mut env,
-            session_handle,
-            device_handle,
-            function_name!(),
-            |env, session, peripheral_handle| {
-                let status = map_gatt_status(status, true);
-                Ok(IOCmd::FinishDiscoverServices { status })
-            },
-        );
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<()> {
+                notify_io_callback_from_jni(
+                    env,
+                    session_handle,
+                    device_handle,
+                    function_name!(),
+                    |env, session, peripheral_handle| {
+                        let status = map_gatt_status(status, true);
+                        Ok(IOCmd::FinishDiscoverServices { status })
+                    },
+                );
+                Ok(())
+            })
+            .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
     }
 
     #[named]
-    extern "C" fn on_device_read_remote_rssi(
-        mut env: JNIEnv,
+    extern "system" fn on_device_read_remote_rssi(
+        mut unowned_env: EnvUnowned,
         session: JObject,
-        session_handle: JHandle<AndroidSession>, // (jlong wrapper)
-        device_handle: jlong,                    // u32 peripheral handle
+        session_handle: AndroidSessionHandle, // (jlong wrapper)
+        device_handle: jlong,                 // u32 peripheral handle
         rssi: jint,
         status: jint,
     ) {
-        notify_io_callback_from_jni(
-            &mut env,
-            session_handle,
-            device_handle,
-            function_name!(),
-            |env, session, peripheral_handle| {
-                let status = map_gatt_status(status, true);
-                Ok(IOCmd::FinishReadRSSI {
-                    rssi: rssi as i16,
-                    status,
-                })
-            },
-        );
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<()> {
+                notify_io_callback_from_jni(
+                    env,
+                    session_handle,
+                    device_handle,
+                    function_name!(),
+                    |env, session, peripheral_handle| {
+                        let status = map_gatt_status(status, true);
+                        Ok(IOCmd::FinishReadRSSI {
+                            rssi: rssi as i16,
+                            status,
+                        })
+                    },
+                );
+                Ok(())
+            })
+            .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
     }
 
     #[named]
-    extern "C" fn on_characteristic_read(
-        mut env: JNIEnv,
+    extern "system" fn on_characteristic_read(
+        mut unowned_env: EnvUnowned,
         session: JObject,
-        session_handle: JHandle<AndroidSession>, // (jlong wrapper)
-        device_handle: jlong,                    // u32 peripheral handle
+        session_handle: AndroidSessionHandle, // (jlong wrapper)
+        device_handle: jlong,                 // u32 peripheral handle
         characteristic_instance_id: jint,
         value: JByteArray,
         status: jint,
     ) {
-        notify_io_callback_from_jni(
-            &mut env,
-            session_handle,
-            device_handle,
-            function_name!(),
-            |env, session, peripheral_handle| {
-                let status = map_gatt_status(status, true);
-                let characteristic_handle = CharacteristicHandle(characteristic_instance_id as u32);
-                let value = env.convert_byte_array(value)?;
-                Ok(IOCmd::FinishReadCharacteristic {
-                    characteristic_handle,
-                    status,
-                    value,
-                })
-            },
-        );
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<()> {
+                notify_io_callback_from_jni(
+                    env,
+                    session_handle,
+                    device_handle,
+                    function_name!(),
+                    |env, session, peripheral_handle| {
+                        let status = map_gatt_status(status, true);
+                        let characteristic_handle =
+                            CharacteristicHandle(characteristic_instance_id as u32);
+                        let value = env.convert_byte_array(value)?;
+                        Ok(IOCmd::FinishReadCharacteristic {
+                            characteristic_handle,
+                            status,
+                            value,
+                        })
+                    },
+                );
+                Ok(())
+            })
+            .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
     }
 
     #[named]
-    extern "C" fn on_characteristic_write(
-        mut env: JNIEnv,
+    extern "system" fn on_characteristic_write(
+        mut unowned_env: EnvUnowned,
         session: JObject,
-        session_handle: JHandle<AndroidSession>, // (jlong wrapper)
-        device_handle: jlong,                    // u32 peripheral handle
+        session_handle: AndroidSessionHandle, // (jlong wrapper)
+        device_handle: jlong,                 // u32 peripheral handle
         characteristic_instance_id: jint,
         status: jint,
     ) {
-        notify_io_callback_from_jni(
-            &mut env,
-            session_handle,
-            device_handle,
-            function_name!(),
-            |env, session, peripheral_handle| {
-                let status = map_gatt_status(status, true);
-                let characteristic_handle = CharacteristicHandle(characteristic_instance_id as u32);
-                Ok(IOCmd::FinishWriteCharacteristic {
-                    characteristic_handle,
-                    status,
-                })
-            },
-        );
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<()> {
+                notify_io_callback_from_jni(
+                    env,
+                    session_handle,
+                    device_handle,
+                    function_name!(),
+                    |env, session, peripheral_handle| {
+                        let status = map_gatt_status(status, true);
+                        let characteristic_handle =
+                            CharacteristicHandle(characteristic_instance_id as u32);
+                        Ok(IOCmd::FinishWriteCharacteristic {
+                            characteristic_handle,
+                            status,
+                        })
+                    },
+                );
+                Ok(())
+            })
+            .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
     }
 
     #[named]
-    extern "C" fn on_characteristic_changed(
-        mut env: JNIEnv,
+    extern "system" fn on_characteristic_changed(
+        mut unowned_env: EnvUnowned,
         session: JObject,
-        session_handle: JHandle<AndroidSession>, // (jlong wrapper)
-        device_handle: jlong,                    // u32 peripheral handle
+        session_handle: AndroidSessionHandle, // (jlong wrapper)
+        device_handle: jlong,                 // u32 peripheral handle
         service_instance_id: jint,
         characteristic_instance_id: jint,
         value: JByteArray,
     ) {
-        notify_io_callback_from_jni(
-            &mut env,
-            session_handle,
-            device_handle,
-            function_name!(),
-            |env, session, peripheral_handle| {
-                let service_handle = ServiceHandle(service_instance_id as u32);
-                let characteristic_handle = CharacteristicHandle(characteristic_instance_id as u32);
-                let value = env.convert_byte_array(value)?;
-                Ok(IOCmd::CharacteristicNotify {
-                    service_handle,
-                    characteristic_handle,
-                    value,
-                })
-            },
-        );
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<()> {
+                notify_io_callback_from_jni(
+                    env,
+                    session_handle,
+                    device_handle,
+                    function_name!(),
+                    |env, session, peripheral_handle| {
+                        let service_handle = ServiceHandle(service_instance_id as u32);
+                        let characteristic_handle =
+                            CharacteristicHandle(characteristic_instance_id as u32);
+                        let value = env.convert_byte_array(value)?;
+                        Ok(IOCmd::CharacteristicNotify {
+                            service_handle,
+                            characteristic_handle,
+                            value,
+                        })
+                    },
+                );
+                Ok(())
+            })
+            .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
     }
 
     #[named]
-    extern "C" fn on_descriptor_read(
-        mut env: JNIEnv,
+    extern "system" fn on_descriptor_read(
+        mut unowned_env: EnvUnowned,
         session: JObject,
-        session_handle: JHandle<AndroidSession>, // (jlong wrapper)
-        device_handle: jlong,                    // u32 peripheral handle
+        session_handle: AndroidSessionHandle, // (jlong wrapper)
+        device_handle: jlong,                 // u32 peripheral handle
         descriptor_id: jint,
         value: JByteArray,
         status: jint,
     ) {
-        notify_io_callback_from_jni(
-            &mut env,
-            session_handle,
-            device_handle,
-            function_name!(),
-            |env, session, peripheral_handle| {
-                let status = map_gatt_status(status, true);
-                let descriptor_handle = DescriptorHandle(descriptor_id as u32);
-                let value = env.convert_byte_array(value)?;
-                Ok(IOCmd::FinishReadDescriptor {
-                    descriptor_handle,
-                    status,
-                    value,
-                })
-            },
-        );
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<()> {
+                notify_io_callback_from_jni(
+                    env,
+                    session_handle,
+                    device_handle,
+                    function_name!(),
+                    |env, session, peripheral_handle| {
+                        let status = map_gatt_status(status, true);
+                        let descriptor_handle = DescriptorHandle(descriptor_id as u32);
+                        let value = env.convert_byte_array(value)?;
+                        Ok(IOCmd::FinishReadDescriptor {
+                            descriptor_handle,
+                            status,
+                            value,
+                        })
+                    },
+                );
+                Ok(())
+            })
+            .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
     }
 
     #[named]
-    extern "C" fn on_descriptor_write(
-        mut env: JNIEnv,
+    extern "system" fn on_descriptor_write(
+        mut unowned_env: EnvUnowned,
         session: JObject,
-        session_handle: JHandle<AndroidSession>, // (jlong wrapper)
-        device_handle: jlong,                    // u32 peripheral handle
+        session_handle: AndroidSessionHandle, // (jlong wrapper)
+        device_handle: jlong,                 // u32 peripheral handle
         descriptor_id: jint,
         status: jint,
     ) {
-        notify_io_callback_from_jni(
-            &mut env,
-            session_handle,
-            device_handle,
-            function_name!(),
-            |env, session, peripheral_handle| {
-                let status = map_gatt_status(status, true);
-                let descriptor_handle = DescriptorHandle(descriptor_id as u32);
-                Ok(IOCmd::FinishWriteDescriptor {
-                    descriptor_handle,
-                    status,
-                })
-            },
-        );
+        unowned_env
+            .with_env(|env| -> jni::errors::Result<()> {
+                notify_io_callback_from_jni(
+                    env,
+                    session_handle,
+                    device_handle,
+                    function_name!(),
+                    |env, session, peripheral_handle| {
+                        let status = map_gatt_status(status, true);
+                        let descriptor_handle = DescriptorHandle(descriptor_id as u32);
+                        Ok(IOCmd::FinishWriteDescriptor {
+                            descriptor_handle,
+                            status,
+                        })
+                    },
+                );
+                Ok(())
+            })
+            .resolve::<jni::errors::ThrowRuntimeExAndDefault>()
     }
 
-    fn register_native_methods(env: &mut JNIEnv, session_class: &JClass) -> Result<()> {
+    fn register_native_methods(env: &mut Env, session_class: &JClass) -> Result<()> {
         debug!("Calling env.register_native_methods...");
-        env.register_native_methods(
-            session_class,
-            &[
-                NativeMethod {
-                    name: "onCompanionDeviceSelect".into(),
-                    sig: "(JLandroid/bluetooth/BluetoothDevice;Ljava/lang/String;Ljava/lang/String;)V".into(),
-                    fn_ptr: Self::on_companion_device_select as *mut c_void,
-                },
-                NativeMethod {
-                    name: "onScanResult".into(),
-                    sig: "(JILandroid/bluetooth/le/ScanResult;Ljava/lang/String;)V".into(),
-                    fn_ptr: Self::on_scan_result as *mut c_void,
-                },
-                NativeMethod {
-                    name: "onDeviceConnectionStateChange".into(),
-                    sig: "(JJZI)V".into(),
-                    fn_ptr: Self::on_device_connection_state_change as *mut c_void,
-                },
-                NativeMethod {
-                    name: "onDeviceBondingStateChange".into(),
-                    sig: "(JJII)V".into(),
-                    fn_ptr: Self::on_device_bonding_state_change as *mut c_void,
-                },
-                NativeMethod {
-                    name: "onDeviceServicesDiscovered".into(),
-                    sig: "(JJI)V".into(),
-                    fn_ptr: Self::on_device_services_discovered as *mut c_void,
-                },
-                NativeMethod {
-                    name: "onDeviceReadRemoteRssi".into(),
-                    sig: "(JJII)V".into(),
-                    fn_ptr: Self::on_device_read_remote_rssi as *mut c_void,
-                },
-                NativeMethod {
-                    name: "onCharacteristicRead".into(),
-                    sig: "(JJI[BI)V".into(),
-                    fn_ptr: Self::on_characteristic_read as *mut c_void,
-                },
-                NativeMethod {
-                    name: "onCharacteristicWrite".into(),
-                    sig: "(JJII)V".into(),
-                    fn_ptr: Self::on_characteristic_write as *mut c_void,
-                },
-                NativeMethod {
-                    name: "onCharacteristicChanged".into(),
-                    sig: "(JJII[B)V".into(),
-                    fn_ptr: Self::on_characteristic_changed as *mut c_void,
-                },
-                NativeMethod {
-                    name: "onDescriptorRead".into(),
-                    sig: "(JJI[BI)V".into(),
-                    fn_ptr: Self::on_descriptor_read as *mut c_void,
-                },
-                NativeMethod {
-                    name: "onDescriptorWrite".into(),
-                    sig: "(JJII)V".into(),
-                    fn_ptr: Self::on_descriptor_write as *mut c_void,
-                },
-            ],
-        )?;
+        macro_rules! session_native_method {
+            ($($tt:tt)*) => {
+                jni::native_method! {
+                    type_map {
+                        unsafe AndroidSessionHandle => jlong,
+                    },
+                    java_type = "co.bluey.BleSession",
+                    $($tt)*
+                }
+            };
+        }
+        unsafe {
+            env.register_native_methods(
+                session_class,
+                &[
+                    session_native_method! {
+                        raw fn on_companion_device_select(session_handle: AndroidSessionHandle, device: android.bluetooth.BluetoothDevice, address: JString, name: JString),
+                        fn = BleSessionNative::on_companion_device_select,
+                    },
+                    session_native_method! {
+                        raw fn on_scan_result(session_handle: AndroidSessionHandle, callback_type: jint, scan_result: android.bluetooth.le.ScanResult, address: JString),
+                        fn = BleSessionNative::on_scan_result,
+                    },
+                    session_native_method! {
+                        raw fn on_device_connection_state_change(session_handle: AndroidSessionHandle, device_handle: jlong, connected: jboolean, status: jint),
+                        fn = BleSessionNative::on_device_connection_state_change,
+                    },
+                    session_native_method! {
+                        raw fn on_device_bonding_state_change(session_handle: AndroidSessionHandle, device_handle: jlong, prev_state: jint, new_state: jint),
+                        fn = BleSessionNative::on_device_bonding_state_change,
+                    },
+                    session_native_method! {
+                        raw fn on_device_services_discovered(session_handle: AndroidSessionHandle, device_handle: jlong, status: jint),
+                        fn = BleSessionNative::on_device_services_discovered,
+                    },
+                    session_native_method! {
+                        raw fn on_device_read_remote_rssi(session_handle: AndroidSessionHandle, device_handle: jlong, rssi: jint, status: jint),
+                        fn = BleSessionNative::on_device_read_remote_rssi,
+                    },
+                    session_native_method! {
+                        raw fn on_characteristic_read(session_handle: AndroidSessionHandle, device_handle: jlong, characteristic_instance_id: jint, value: byte[], status: jint),
+                        fn = BleSessionNative::on_characteristic_read,
+                    },
+                    session_native_method! {
+                        raw fn on_characteristic_write(session_handle: AndroidSessionHandle, device_handle: jlong, characteristic_instance_id: jint,  status: jint),
+                        fn = BleSessionNative::on_characteristic_write,
+                    },
+                    session_native_method! {
+                        raw fn on_characteristic_changed(session_handle: AndroidSessionHandle, device_handle: jlong, service_instance_id: jint, characteristic_instance_id: jint, value: byte[]),
+                        fn = BleSessionNative::on_characteristic_changed,
+                    },
+                    session_native_method! {
+                        raw fn on_descriptor_read(session_handle: AndroidSessionHandle, device_handle: jlong, descriptor_id: jint, value: byte[], status: jint),
+                        fn = BleSessionNative::on_descriptor_read,
+                    },
+                    session_native_method! {
+                        raw fn on_descriptor_write(session_handle: AndroidSessionHandle, device_handle: jlong, descriptor_id: jint, status: jint),
+                        fn = BleSessionNative::on_descriptor_write,
+                    },
+                ],
+            )?;
+        }
         Ok(())
     }
 }
@@ -1115,8 +1265,11 @@ impl AndroidSession {
         Self { inner }
     }
 
-    fn new_with_jni_local_frame(env: &mut JNIEnv, activity: &JObject, companion_chooser_request_code: Option<u32>, backend_bus: mpsc::UnboundedSender<BackendEvent>) -> Result<Self> {
-        let jvm = env.get_java_vm()?;
+    fn new_with_jni_local_frame(
+        env: &mut Env, activity: &JObject, companion_chooser_request_code: Option<u32>,
+        backend_bus: mpsc::UnboundedSender<BackendEvent>,
+    ) -> Result<Self> {
+        let jvm = jni::JavaVM::singleton().expect("Failed to get JavaVM singleton");
 
         // Since we likely aren't running on the Java main thread we need to consider
         // that env.find_class() will fallback to the system classLoader which won't find
@@ -1128,49 +1281,23 @@ impl AndroidSession {
         //
         let activity_class = env.get_object_class(activity)?;
 
-        let get_class_loader_method = resolve_method_id(
-            env,
-            &activity_class,
-            "getClassLoader",
-            "()Ljava/lang/ClassLoader;",
-        )?;
-
         trace!("Calling activity.getClassLoader()");
-        let loader = try_call_object_method(env, activity, get_class_loader_method, &[])?;
-        let loader_class: JObject = env.find_class("java/lang/ClassLoader")?.into();
-        let load_class_method = resolve_method_id(
-            env,
-            &loader_class.into(),
-            "loadClass",
-            "(Ljava/lang/String;)Ljava/lang/Class;",
-        )?;
-        let ble_session_class_name: JObject = env.new_string(BLE_SESSION_CLASS_NAME)?.into();
-        let session_class: JClass = try_call_object_method(
-            env,
-            &loader,
-            load_class_method,
-            &[JValue::Object(&ble_session_class_name).as_jni()],
-        )?
-        .into();
+        let class_loader = activity_class.get_class_loader(env)?;
+        let loader_context = LoaderContext::Loader(&class_loader);
 
-        trace!("AndroidSession::new(): find_class(BluetoothDevice)");
-        let android_device_class = match env.find_class("android/bluetooth/BluetoothDevice") {
-            Ok(s) => s,
-            Err(err) => {
-                error!("Failed to find BluetoothDevice class: {:?}", err);
-                return Err(err)?;
-            }
-        };
+        let session_class = loader_context.load_class(env, BLE_SESSION_CLASS_NAME, false)?;
 
-        trace!("AndroidSession::new(): find_class(BleDevice)");
-        let ble_device_class_name: JObject = env.new_string(BLE_DEVICE_CLASS_NAME)?.into();
-        let ble_device_class: JClass = try_call_object_method(
-            env,
-            &loader,
-            load_class_method,
-            &[JValue::Object(&ble_device_class_name).as_jni()],
-        )?
-        .into();
+        let android_device_class =
+            match loader_context.load_class(env, ANDROID_BLE_DEVICE_CLASS_NAME, false) {
+                Ok(s) => s,
+                Err(err) => {
+                    error!("Failed to find BluetoothDevice class: {:?}", err);
+                    return Err(err)?;
+                }
+            };
+
+        trace!("AndroidSession::new(): load_class(BleDevice)");
+        let ble_device_class = loader_context.load_class(env, BLE_DEVICE_CLASS_NAME, false)?;
 
         trace!("AndroidSession::new(): construct new BleSession");
         let activity_val = jni::objects::JValue::Object(activity);
@@ -1180,7 +1307,7 @@ impl AndroidSession {
         };
         let jsession = match env.new_object(
             &session_class,
-            "(Landroid/app/Activity;I)V",
+            jni_sig!("(Landroid/app/Activity;I)V"),
             &[activity_val, chooser_request_code],
         ) {
             Ok(s) => s,
@@ -1214,274 +1341,269 @@ impl AndroidSession {
                 set_native_handle_method: resolve_method_id(
                     env,
                     &session_class,
-                    "setNativeSessionHandle",
-                    "(J)V",
+                    jni_str!("setNativeSessionHandle"),
+                    jni_sig!("(J)V"),
                 )?,
 
+                check_bluetooth_scan_permission_method: resolve_method_id(
+                    env,
+                    &session_class,
+                    jni_str!("checkBluetoothScanPermission"),
+                    jni_sig!("()Z"),
+                )?,
+                check_bluetooth_connect_permission_method: resolve_method_id(
+                    env,
+                    &session_class,
+                    jni_str!("checkBluetoothConnectPermission"),
+                    jni_sig!("()Z"),
+                )?,
+                select_device_method: resolve_method_id(
+                    env,
+                    &session_class,
+                    jni_str!("selectDevice"),
+                    jni_sig!("()I"),
+                )?,
                 scanner_config_reset_method: resolve_method_id(
                     env,
                     &session_class,
-                    "scannerConfigReset",
-                    "()V",
+                    jni_str!("scannerConfigReset"),
+                    jni_sig!("()V"),
                 )?,
                 scanner_config_add_service_uuid_method: resolve_method_id(
                     env,
                     &session_class,
-                    "scannerConfigAddServiceUuid",
-                    "(Ljava/lang/String;)V",
+                    jni_str!("scannerConfigAddServiceUuid"),
+                    jni_sig!("(Ljava/lang/String;)V"),
                 )?,
                 start_scanning_method: resolve_method_id(
                     env,
                     &session_class,
-                    "startScanning",
-                    "()V",
+                    jni_str!("startScanning"),
+                    jni_sig!("()I"),
                 )?,
-                stop_scanning_method: resolve_method_id(env, &session_class, "stopScanning", "()V")?,
+                stop_scanning_method: resolve_method_id(
+                    env,
+                    &session_class,
+                    jni_str!("stopScanning"),
+                    jni_sig!("()V"),
+                )?,
 
                 scan_result_get_local_name_method: resolve_method_id(
                     env,
                     &session_class,
-                    "scanResultGetLocalName",
-                    "(Landroid/bluetooth/le/ScanResult;)Ljava/lang/String;",
+                    jni_str!("scanResultGetLocalName"),
+                    jni_sig!("(Landroid/bluetooth/le/ScanResult;)Ljava/lang/String;"),
                 )?,
                 scan_result_get_specific_manufacturer_data_count_method: resolve_method_id(
                     env,
                     &session_class,
-                    "scanResultGetSpecificManufacturerDataCount",
-                    "(Landroid/bluetooth/le/ScanResult;)I",
+                    jni_str!("scanResultGetSpecificManufacturerDataCount"),
+                    jni_sig!("(Landroid/bluetooth/le/ScanResult;)I"),
                 )?,
                 scan_result_get_specific_manufacturer_data_id_method: resolve_method_id(
                     env,
                     &session_class,
-                    "scanResultGetSpecificManufacturerDataId",
-                    "(Landroid/bluetooth/le/ScanResult;I)I",
+                    jni_str!("scanResultGetSpecificManufacturerDataId"),
+                    jni_sig!("(Landroid/bluetooth/le/ScanResult;I)I"),
                 )?,
                 scan_result_get_specific_manufacturer_data_method: resolve_method_id(
                     env,
                     &session_class,
-                    "scanResultGetSpecificManufacturerData",
-                    "(Landroid/bluetooth/le/ScanResult;I)[B",
+                    jni_str!("scanResultGetSpecificManufacturerData"),
+                    jni_sig!("(Landroid/bluetooth/le/ScanResult;I)[B"),
                 )?,
                 scan_result_get_service_uuids_count_method: resolve_method_id(
                     env,
                     &session_class,
-                    "scanResultGetServiceUuidsCount",
-                    "(Landroid/bluetooth/le/ScanResult;)I",
+                    jni_str!("scanResultGetServiceUuidsCount"),
+                    jni_sig!("(Landroid/bluetooth/le/ScanResult;)I"),
                 )?,
                 scan_result_get_nth_service_uuid_method: resolve_method_id(
                     env,
                     &session_class,
-                    "scanResultGetNthServiceUuid",
-                    "(Landroid/bluetooth/le/ScanResult;I)Ljava/lang/String;",
+                    jni_str!("scanResultGetNthServiceUuid"),
+                    jni_sig!("(Landroid/bluetooth/le/ScanResult;I)Ljava/lang/String;"),
                 )?,
                 scan_result_get_tx_power_method: resolve_method_id(
                     env,
                     &session_class,
-                    "scanResultGetTxPowerLevel",
-                    "(Landroid/bluetooth/le/ScanResult;)I",
+                    jni_str!("scanResultGetTxPowerLevel"),
+                    jni_sig!("(Landroid/bluetooth/le/ScanResult;)I"),
                 )?,
                 scan_result_get_rssi_method: resolve_method_id(
                     env,
                     &session_class,
-                    "scanResultGetRssi",
-                    "(Landroid/bluetooth/le/ScanResult;)I",
+                    jni_str!("scanResultGetRssi"),
+                    jni_sig!("(Landroid/bluetooth/le/ScanResult;)I"),
                 )?,
 
                 get_device_for_address_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getDeviceForAddress",
-                    concatcp!("(Ljava/lang/String;J)", BLE_DEVICE_JNI_TYPE),
+                    jni_str!("getDeviceForAddress"),
+                    bluey_sig!((device: JString, handle: AndroidSessionHandle) -> BleDevice),
                 )?,
 
                 connect_device_gatt_method: resolve_method_id(
                     env,
                     &session_class,
-                    "connectDeviceGatt",
-                    concatcp!("(", BLE_DEVICE_JNI_TYPE, "JZ)V"),
+                    jni_str!("connectDeviceGatt"),
+                    bluey_sig!((device: BleDevice, handle: AndroidSessionHandle, autoconnect: bool) -> ()),
                 )?,
                 reconnect_device_gatt_method: resolve_method_id(
                     env,
                     &session_class,
-                    "reconnectDeviceGatt",
-                    concatcp!("(", BLE_DEVICE_JNI_TYPE, ")Z"),
+                    jni_str!("reconnectDeviceGatt"),
+                    bluey_sig!((device: BleDevice) -> bool),
                 )?,
                 disconnect_device_gatt_method: resolve_method_id(
                     env,
                     &session_class,
-                    "disconnectDeviceGatt",
-                    concatcp!("(", BLE_DEVICE_JNI_TYPE, ")V"),
+                    jni_str!("disconnectDeviceGatt"),
+                    bluey_sig!((device: BleDevice) -> ()),
                 )?,
                 close_device_gatt_method: resolve_method_id(
                     env,
                     &session_class,
-                    "closeDeviceGatt",
-                    concatcp!("(", BLE_DEVICE_JNI_TYPE, ")V"),
+                    jni_str!("closeDeviceGatt"),
+                    bluey_sig!((device: BleDevice) -> ()),
                 )?,
 
                 get_device_bond_state_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getDeviceBondState",
-                    concatcp!("(", BLE_DEVICE_JNI_TYPE, ")I"),
+                    jni_str!("getDeviceBondState"),
+                    bluey_sig!((device: BleDevice) -> i32),
                 )?,
                 get_device_name_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getDeviceName",
-                    concatcp!("(", BLE_DEVICE_JNI_TYPE, ")Ljava/lang/String;"),
+                    jni_str!("getDeviceName"),
+                    bluey_sig!((device: BleDevice) -> JString),
                 )?,
                 read_device_rssi_method: resolve_method_id(
                     env,
                     &session_class,
-                    "readDeviceRssi",
-                    concatcp!("(", BLE_DEVICE_JNI_TYPE, ")Z"),
+                    jni_str!("readDeviceRssi"),
+                    bluey_sig!((device: BleDevice) -> bool),
                 )?,
                 discover_device_services_method: resolve_method_id(
                     env,
                     &session_class,
-                    "discoverDeviceServices",
-                    concatcp!("(", BLE_DEVICE_JNI_TYPE, ")Z"),
+                    jni_str!("discoverDeviceServices"),
+                    bluey_sig!((device: BleDevice) -> bool),
                 )?,
                 get_device_services_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getDeviceServices",
-                    concatcp!("(", BLE_DEVICE_JNI_TYPE, ")Ljava/util/List;"),
+                    jni_str!("getDeviceServices"),
+                    bluey_sig!((device: BleDevice) -> JList),
                 )?,
                 clear_device_gatt_state_method: resolve_method_id(
                     env,
                     &session_class,
-                    "clearDeviceGattState",
-                    concatcp!("(", BLE_DEVICE_JNI_TYPE, ")V"),
+                    jni_str!("clearDeviceGattState"),
+                    bluey_sig!((device: BleDevice) -> ()),
                 )?,
 
                 get_service_instance_id_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getServiceInstanceId",
-                    "(Landroid/bluetooth/BluetoothGattService;)I",
+                    jni_str!("getServiceInstanceId"),
+                    jni_sig!("(Landroid/bluetooth/BluetoothGattService;)I"),
                 )?,
                 get_service_uuid_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getServiceUuid",
-                    "(Landroid/bluetooth/BluetoothGattService;)Ljava/lang/String;",
+                    jni_str!("getServiceUuid"),
+                    jni_sig!("(Landroid/bluetooth/BluetoothGattService;)Ljava/lang/String;"),
                 )?,
                 get_service_includes_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getServiceIncludes",
-                    "(Landroid/bluetooth/BluetoothGattService;)Ljava/util/List;",
+                    jni_str!("getServiceIncludes"),
+                    jni_sig!("(Landroid/bluetooth/BluetoothGattService;)Ljava/util/List;"),
                 )?,
                 get_service_characteristics_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getServiceCharacteristics",
-                    "(Landroid/bluetooth/BluetoothGattService;)Ljava/util/List;",
+                    jni_str!("getServiceCharacteristics"),
+                    jni_sig!("(Landroid/bluetooth/BluetoothGattService;)Ljava/util/List;"),
                 )?,
 
                 get_characteristic_instance_id_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getCharacteristicInstanceId",
-                    "(Landroid/bluetooth/BluetoothGattCharacteristic;)I",
+                    jni_str!("getCharacteristicInstanceId"),
+                    jni_sig!("(Landroid/bluetooth/BluetoothGattCharacteristic;)I"),
                 )?,
                 get_characteristic_uuid_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getCharacteristicUuid",
-                    "(Landroid/bluetooth/BluetoothGattCharacteristic;)Ljava/lang/String;",
+                    jni_str!("getCharacteristicUuid"),
+                    jni_sig!("(Landroid/bluetooth/BluetoothGattCharacteristic;)Ljava/lang/String;"),
                 )?,
                 get_characteristic_properties_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getCharacteristicProperties",
-                    "(Landroid/bluetooth/BluetoothGattCharacteristic;)I",
+                    jni_str!("getCharacteristicProperties"),
+                    jni_sig!("(Landroid/bluetooth/BluetoothGattCharacteristic;)I"),
                 )?,
                 get_characteristic_descriptors_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getCharacteristicDescriptors",
-                    "(Landroid/bluetooth/BluetoothGattCharacteristic;)Ljava/util/List;",
+                    jni_str!("getCharacteristicDescriptors"),
+                    jni_sig!("(Landroid/bluetooth/BluetoothGattCharacteristic;)Ljava/util/List;"),
                 )?,
                 characteristic_read_method: resolve_method_id(
                     env,
                     &session_class,
-                    "requestReadCharacteristic",
-                    concatcp!(
-                        "(",
-                        BLE_DEVICE_JNI_TYPE,
-                        "Landroid/bluetooth/BluetoothGattCharacteristic;)Z"
-                    ),
+                    jni_str!("requestReadCharacteristic"),
+                    bluey_sig!((device: BleDevice, characteristic: ABluetoothGattCharacteristic) -> bool),
                 )?,
                 characteristic_write_method: resolve_method_id(
                     env,
                     &session_class,
-                    "requestWriteCharacteristic",
-                    concatcp!(
-                        "(",
-                        BLE_DEVICE_JNI_TYPE,
-                        "Landroid/bluetooth/BluetoothGattCharacteristic;[BI)Z"
-                    ),
+                    jni_str!("requestWriteCharacteristic"),
+                    bluey_sig!((device: BleDevice, characteristic: ABluetoothGattCharacteristic, data: byte[], write_type: i32) -> bool),
                 )?,
                 characteristic_subscribe_method: resolve_method_id(
                     env,
                     &session_class,
-                    "requestSubscribeCharacteristic",
-                    concatcp!(
-                        "(",
-                        BLE_DEVICE_JNI_TYPE,
-                        "Landroid/bluetooth/BluetoothGattCharacteristic;)Z"
-                    ),
+                    jni_str!("requestSubscribeCharacteristic"),
+                    bluey_sig!((device: BleDevice, characteristic: ABluetoothGattCharacteristic) -> bool),
                 )?,
                 characteristic_unsubscribe_method: resolve_method_id(
                     env,
                     &session_class,
-                    "requestUnsubscribeCharacteristic",
-                    concatcp!(
-                        "(",
-                        BLE_DEVICE_JNI_TYPE,
-                        "Landroid/bluetooth/BluetoothGattCharacteristic;)Z"
-                    ),
+                    jni_str!("requestUnsubscribeCharacteristic"),
+                    bluey_sig!((device: BleDevice, characteristic: ABluetoothGattCharacteristic) -> bool),
                 )?,
 
                 //add_descriptor_handle_method: env.get_method_id(session_class, "addDescriptorHandle", "(", BLE_DEVICE_JNI_TYPE, "Landroid/bluetooth/BluetoothGattDescriptor;J)")?.into(),
                 get_descriptor_id_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getDescriptorId",
-                    concatcp!(
-                        "(",
-                        BLE_DEVICE_JNI_TYPE,
-                        "Landroid/bluetooth/BluetoothGattDescriptor;)I"
-                    ),
+                    jni_str!("getDescriptorId"),
+                    bluey_sig!((device: BleDevice, descriptor: ABluetoothGattDescriptor) -> i32),
                 )?,
                 get_descriptor_uuid_method: resolve_method_id(
                     env,
                     &session_class,
-                    "getDescriptorUuid",
-                    "(Landroid/bluetooth/BluetoothGattDescriptor;)Ljava/lang/String;",
+                    jni_str!("getDescriptorUuid"),
+                    bluey_sig!((descriptor: ABluetoothGattDescriptor) -> JString),
                 )?,
                 descriptor_read_method: resolve_method_id(
                     env,
                     &session_class,
-                    "requestReadDescriptor",
-                    concatcp!(
-                        "(",
-                        BLE_DEVICE_JNI_TYPE,
-                        "Landroid/bluetooth/BluetoothGattDescriptor;)Z"
-                    ),
+                    jni_str!("requestReadDescriptor"),
+                    bluey_sig!((device: BleDevice, descriptor: ABluetoothGattDescriptor) -> bool),
                 )?,
                 descriptor_write_method: resolve_method_id(
                     env,
                     &session_class,
-                    "requestWriteDescriptor",
-                    concatcp!(
-                        "(",
-                        BLE_DEVICE_JNI_TYPE,
-                        "Landroid/bluetooth/BluetoothGattDescriptor;[B)Z"
-                    ),
+                    jni_str!("requestWriteDescriptor"),
+                    bluey_sig!((device: BleDevice, descriptor: ABluetoothGattDescriptor, data: byte[]) -> bool),
                 )?,
 
                 // BluetoothDevice methods...
@@ -1489,8 +1611,8 @@ impl AndroidSession {
                 device_get_address_method: resolve_method_id(
                     env,
                     &android_device_class,
-                    "getAddress",
-                    "()Ljava/lang/String;",
+                    jni_str!("getAddress"),
+                    jni_sig!("()Ljava/lang/String;"),
                 )?,
             }),
         };
@@ -1540,17 +1662,19 @@ impl AndroidSession {
             .take()
             .expect("Missing AndroidConfig on Android");
         let AndroidConfig {
-            jni_env: mut env,
+            jvm,
             activity,
             companion_chooser_request_code,
             ..
         } = android_config;
 
-        // We don't have an implicit JNI local reference frame since we can't
-        // assume we're going to be returning to Java from here and so we need
-        // to make sure any local references we create via jni-rs get released
-        env.with_local_frame(10, |env| {
-            Self::new_with_jni_local_frame(env, &activity, companion_chooser_request_code, backend_bus)
+        jvm.attach_current_thread(|env| {
+            Self::new_with_jni_local_frame(
+                env,
+                &activity,
+                companion_chooser_request_code,
+                backend_bus,
+            )
         })
     }
 
@@ -1624,13 +1748,10 @@ impl AndroidSession {
         }
     }
 
-    fn handle_io_notification(
-        state: &mut IOProcessorState, session: AndroidSession, cmd: IOCmd,
-        peripheral_handle: PeripheralHandle, ble_device: GlobalRef,
+    fn handle_io_notification_with_env(
+        env: &mut Env, state: &mut IOProcessorState, session: AndroidSession, cmd: IOCmd,
+        peripheral_handle: PeripheralHandle, ble_device: &Global<JObject<'static>>,
     ) -> Result<()> {
-        trace!("Handling peripheral IO notification = {cmd:?}");
-
-        let mut jenv = session.jvm.get_env()?;
         match cmd {
             IOCmd::RequestConnect { .. } |
             //IOCmd::RequestDisconnect { .. } |
@@ -1668,7 +1789,7 @@ impl AndroidSession {
                                 // us of a connect then we want to delay any follow up requests, such
                                 // as service discovery until the bonding is complete...
                                 trace!("Querying device bond state");
-                                let bond_state = try_call_int_method(&mut jenv, &session.jsession, session.get_device_bond_state_method,
+                                let bond_state = try_call_int_method(env, &session.jsession, session.get_device_bond_state_method,
                                                                 &[JValue::Object(&ble_device).as_jni()])?;
                                 let bond_state = AndroidBondState::from(bond_state);
                                 trace!("Bonding state after connection = {:?}", bond_state);
@@ -1763,16 +1884,16 @@ impl AndroidSession {
 
                         let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
 
-                        let services = try_call_object_method(&mut jenv, &session.jsession, session.get_device_services_method,
+                        let services = try_call_object_method(env, &session.jsession, session.get_device_services_method,
                                                                     &[JValue::Object(&ble_device).as_jni()])?;
-                        let services: JList = JList::from_env(&mut jenv, &services)?;
+                        let services= JList::cast_local(env, services)?;
 
-                        session.index_services_list(&android_peripheral, &services)?;
+                        session.index_services_list(env, &android_peripheral, &services)?;
 
-                        let mut list_iter = services.iter(&mut jenv)?;
-                        while let Some(service) = list_iter.next(&mut jenv)? {
-                            let service_handle = session.get_service_handle(&mut jenv, &android_peripheral, &service)?;
-                            let uuid = session.get_service_uuid(&mut jenv, &android_peripheral, &service)?;
+                        let mut list_iter = services.iter(env)?;
+                        while let Some(service) = list_iter.next(env)? {
+                            let service_handle = session.get_service_handle(env, &android_peripheral, &service)?;
+                            let uuid = session.get_service_uuid(env, &android_peripheral, &service)?;
                             let _ = session.backend_bus.send(BackendEvent::GattService {
                                 peripheral_handle,
                                 service_handle,
@@ -1924,10 +2045,29 @@ impl AndroidSession {
         }
     }
 
-    fn handle_io_request_with_jni_local_frame(jenv: &mut JNIEnv, state: &mut IOProcessorState, session: AndroidSession, request: IOCmd,
-        peripheral_handle: PeripheralHandle, ble_device: GlobalRef)
-    -> Result<()> {
+    fn handle_io_notification(
+        state: &mut IOProcessorState, session: AndroidSession, cmd: IOCmd,
+        peripheral_handle: PeripheralHandle, ble_device: &Global<JObject<'static>>,
+    ) -> Result<()> {
+        trace!("Handling peripheral IO notification = {cmd:?}");
 
+        let vm = session.jvm.clone();
+        vm.attach_current_thread(|env| {
+            Self::handle_io_notification_with_env(
+                env,
+                state,
+                session,
+                cmd,
+                peripheral_handle,
+                ble_device,
+            )
+        })
+    }
+
+    fn handle_io_request_with_env(
+        jenv: &mut Env, state: &mut IOProcessorState, session: AndroidSession, request: IOCmd,
+        peripheral_handle: PeripheralHandle, ble_device: &Global<JObject<'static>>,
+    ) -> Result<()> {
         match request {
             IOCmd::ConnectionStatusNotify { .. } |
             IOCmd::BondingStateNotify { .. } |
@@ -1967,7 +2107,7 @@ impl AndroidSession {
                     try_call_void_method(jenv, &session.jsession, session.connect_device_gatt_method,
                         &[JValue::Object(&ble_device).as_jni(),
                                 peripheral_handle.into(),
-                                JValue::Bool(1).as_jni() /* autoconnect=true */])?;
+                                JValue::Bool(true).as_jni() /* autoconnect=true */])?;
                         //JValue::Long(android_peripheral.peripheral_handle.0 as jlong)])?;
 
                     {
@@ -2038,7 +2178,7 @@ impl AndroidSession {
 
             IOCmd::RequestReadCharacteristic { characteristic_handle, .. } => {
                 let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
-                let jcharacteristic = session.gatt_characteristic_from_handle(&android_peripheral, characteristic_handle)?;
+                let jcharacteristic = session.gatt_characteristic_from_handle(jenv, &android_peripheral, characteristic_handle)?;
 
                 if !try_call_bool_method(jenv, &session.jsession, session.characteristic_read_method,
                                         &[JValue::Object(&ble_device).as_jni(),
@@ -2056,7 +2196,7 @@ impl AndroidSession {
 
             IOCmd::RequestWriteCharacteristic { service_handle, characteristic_handle, value, write_type } => {
                 let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
-                let jcharacteristic = session.gatt_characteristic_from_handle(&android_peripheral, characteristic_handle)?;
+                let jcharacteristic = session.gatt_characteristic_from_handle(jenv, &android_peripheral, characteristic_handle)?;
 
                 let value_bytes = jenv.byte_array_from_slice(&value)?;
                 if !try_call_bool_method(jenv, &session.jsession, session.characteristic_write_method,
@@ -2078,7 +2218,7 @@ impl AndroidSession {
 
             IOCmd::RequestSubscribeCharacteristic { characteristic_handle } => {
                 let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
-                let jcharacteristic = session.gatt_characteristic_from_handle(&android_peripheral, characteristic_handle)?;
+                let jcharacteristic = session.gatt_characteristic_from_handle(jenv, &android_peripheral, characteristic_handle)?;
                 if !try_call_bool_method(jenv, &session.jsession, session.characteristic_subscribe_method,
                                         &[JValue::Object(&ble_device).as_jni(),
                                                 JValue::Object(&jcharacteristic).as_jni()])? {
@@ -2092,7 +2232,7 @@ impl AndroidSession {
 
             IOCmd::RequestUnsubscribeCharacteristic { characteristic_handle } => {
                 let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
-                let jcharacteristic = session.gatt_characteristic_from_handle(&android_peripheral, characteristic_handle)?;
+                let jcharacteristic = session.gatt_characteristic_from_handle(jenv, &android_peripheral, characteristic_handle)?;
                 if !try_call_bool_method(jenv, &session.jsession, session.characteristic_unsubscribe_method,
                                         &[JValue::Object(&ble_device).as_jni(),
                                                 JValue::Object(&jcharacteristic).as_jni()])? {
@@ -2107,7 +2247,7 @@ impl AndroidSession {
 
             IOCmd::RequestReadDescriptor { service_handle, characteristic_handle, descriptor_handle, .. } => {
                 let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
-                let jdescriptor = session.gatt_descriptor_from_handle(&android_peripheral, descriptor_handle)?;
+                let jdescriptor = session.gatt_descriptor_from_handle(jenv, &android_peripheral, descriptor_handle)?;
 
                 if !try_call_bool_method(jenv, &session.jsession, session.descriptor_read_method,
                                         &[JValue::Object(&ble_device).as_jni(),
@@ -2125,7 +2265,7 @@ impl AndroidSession {
 
             IOCmd::RequestWriteDescriptor { service_handle, characteristic_handle, descriptor_handle, value } => {
                 let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
-                let jdescriptor = session.gatt_descriptor_from_handle(&android_peripheral, descriptor_handle)?;
+                let jdescriptor = session.gatt_descriptor_from_handle(jenv, &android_peripheral, descriptor_handle)?;
 
                 let value_bytes = jenv.byte_array_from_slice(&value)?;
                 if !try_call_bool_method(jenv, &session.jsession, session.descriptor_write_method,
@@ -2148,26 +2288,34 @@ impl AndroidSession {
 
     fn handle_io_request(
         state: &mut IOProcessorState, session: AndroidSession, request: IOCmd,
-        peripheral_handle: PeripheralHandle, ble_device: GlobalRef,
+        peripheral_handle: PeripheralHandle, ble_device: &Global<JObject<'static>>,
     ) -> Result<()> {
         trace!("Handling peripheral IO request = {request:?}");
 
-        let jvm = session.jvm.clone();
-        let mut jenv = jvm.get_env()?;
-
-        jenv.with_local_frame(10, |env| {
-            Self::handle_io_request_with_jni_local_frame(env, state, session, request, peripheral_handle, ble_device)
+        let vm = session.jvm.clone();
+        vm.attach_current_thread(|env| {
+            Self::handle_io_request_with_env(
+                env,
+                state,
+                session,
+                request,
+                peripheral_handle,
+                ble_device,
+            )
         })
     }
 
-    async fn run_peripheral_io_task_command_loop(
+    async fn run_peripheral_io_task_command_loop<'a>(
         peripheral_handle: PeripheralHandle,
         //io_bus: mpsc::UnboundedReceiver<IORequest>,
-        mut cmd_stream: Pin<&mut Fuse<UnboundedReceiverStream<IOCmd>>>,
+        mut cmd_stream: Pin<&'a mut Fuse<UnboundedReceiverStream<IOCmd>>>,
         weak_session_inner: Weak<AndroidSessionInner>,
-        ble_device: GlobalRef,
+        ble_device: EnsureSendGlobalObject,
         mut cancellation: tokio::sync::oneshot::Receiver<AndroidSession>,
-    ) -> (Pin<&mut Fuse<UnboundedReceiverStream<IOCmd>>>, Result<()>) {
+    ) -> (
+        Pin<&'a mut Fuse<UnboundedReceiverStream<IOCmd>>>,
+        Result<()>,
+    ) {
         let mut state = IOProcessorState {
             queue: VecDeque::new(),
 
@@ -2228,7 +2376,7 @@ impl AndroidSession {
                         IOCmd::FinishReadDescriptor { .. } |
                         IOCmd::FinishWriteDescriptor { .. }
                         => {
-                            if let Err(err) = AndroidSession::handle_io_notification(&mut state, session.clone(), cmd, peripheral_handle, ble_device.clone()) {
+                            if let Err(err) = AndroidSession::handle_io_notification(&mut state, session.clone(), cmd, peripheral_handle, &ble_device) {
                                 error!("IO Task: Failed to handle callback / notification: {err}");
                                 // XXX: we should probably check for certain errors and in some cases
                                 // abort the IO loop and disconnect / close the device
@@ -2290,18 +2438,18 @@ impl AndroidSession {
                     AndroidSession::wrap_inner(android_session_inner.unwrap())
                 };
 
-                error!("IO: Checking get_env() before calling handle_io_request()");
-                if let Err(err) = session.jvm.get_env() {
-                    error!("IO: can't query session JVM: {err:?}");
-                }
-                error!("IO: Calling handle_io_request(): {request:?}");
-                if let Err(err) = AndroidSession::handle_io_request(
-                    &mut state,
-                    session,
-                    request,
-                    peripheral_handle,
-                    ble_device.clone(),
-                ) {
+                let vm = session.jvm.clone();
+                if let Err(err) = vm.attach_current_thread(|env| {
+                    debug!("IO: Calling handle_io_request(): {request:?}");
+                    AndroidSession::handle_io_request_with_env(
+                        env,
+                        &mut state,
+                        session,
+                        request,
+                        peripheral_handle,
+                        &ble_device,
+                    )
+                }) {
                     error!("IO Task: Failed to execute IO request: {err}");
                     // XXX: we should probably check for certain errors and in some cases
                     // abort the IO loop and disconnect / close the device
@@ -2325,7 +2473,8 @@ impl AndroidSession {
 
     async fn disconnect_and_close(
         peripheral_handle: PeripheralHandle, weak_session_inner: Weak<AndroidSessionInner>,
-        mut cmd_stream: Pin<&mut Fuse<UnboundedReceiverStream<IOCmd>>>, ble_device: GlobalRef,
+        mut cmd_stream: Pin<&mut Fuse<UnboundedReceiverStream<IOCmd>>>,
+        ble_device: EnsureSendGlobalObject,
     ) -> Result<()> {
         let session = {
             let android_session_inner = weak_session_inner.upgrade();
@@ -2350,13 +2499,15 @@ impl AndroidSession {
             // connected and we just haven't recieved the notification yet.
 
             {
-                let mut jenv = session.jvm.get_env()?;
-                try_call_void_method(
-                    &mut jenv,
-                    &session.jsession,
-                    session.disconnect_device_gatt_method,
-                    &[JValue::Object(&ble_device).as_jni()],
-                )?;
+                let vm = session.jvm.clone();
+                vm.attach_current_thread(|env| {
+                    try_call_void_method(
+                        env,
+                        &session.jsession,
+                        session.disconnect_device_gatt_method,
+                        &[JValue::Object(&ble_device).as_jni()],
+                    )
+                })?;
             }
 
             // Wait for the disconnect notification...
@@ -2403,13 +2554,15 @@ impl AndroidSession {
             }
         }
 
-        let mut jenv = session.jvm.get_env()?;
-        try_call_void_method(
-            &mut jenv,
-            &session.jsession,
-            session.close_device_gatt_method,
-            &[JValue::Object(&ble_device).as_jni()],
-        )?;
+        let vm = session.jvm.clone();
+        vm.attach_current_thread(|env| {
+            try_call_void_method(
+                env,
+                &session.jsession,
+                session.close_device_gatt_method,
+                &[JValue::Object(&ble_device).as_jni()],
+            )
+        })?;
 
         {
             let android_peripheral = session.android_peripheral_from_handle(peripheral_handle)?;
@@ -2421,33 +2574,60 @@ impl AndroidSession {
         Ok(())
     }
 
+    async fn debug_run_peripheral_io_task(
+        peripheral_handle: PeripheralHandle, io_bus: mpsc::UnboundedReceiver<IOCmd>,
+        weak_session_inner: Weak<AndroidSessionInner>, ble_device: Global<JObject<'static>>,
+        cancellation: tokio::sync::oneshot::Receiver<AndroidSession>,
+    ) {
+        fn assert_send<T: Send>() {}
+        assert_send::<Global<JObject<'static>>>();
+
+        struct Wrap(pub Global<JObject<'static>>);
+        impl From<Global<JObject<'static>>> for Wrap {
+            fn from(value: Global<JObject<'static>>) -> Self {
+                Wrap(value)
+            }
+        }
+        let ble_device: Wrap = ble_device.into(); // Won't compile if this isn't wrapped before the await
+                                                  //let ble_device: &Global<JObject<'static>> = &ble_device;
+                                                  //let EnsureSendGlobalObject (ble_device) = ble_device;
+        tokio::time::sleep(Duration::from_secs(1)).await; // Give the device a chance to connect
+
+        let Wrap(ble_device) = ble_device;
+
+        //let ble_device: Wrap = ble_device.into(); // Won't compile if this is commented out
+
+        tokio::time::sleep(Duration::from_secs(1)).await; // Give the device a chance to connect
+    }
+
     // Note: this task is not cancellation safe (since we rely on a clean exit to
     // handle disconnecting / closing the device GATT) so we don't use tokio's
     // JoinHandle::abort() API when we want to stop the task, instead we use a
     // oneshot to signal that we want to cancel the task.
     async fn run_peripheral_io_task(
-        peripheral_handle: PeripheralHandle, io_bus: mpsc::UnboundedReceiver<IOCmd>,
-        weak_session_inner: Weak<AndroidSessionInner>, ble_device: GlobalRef,
+        peripheral_handle: PeripheralHandle,
+        io_bus: mpsc::UnboundedReceiver<IOCmd>,
+        weak_session_inner: Weak<AndroidSessionInner>,
+        //ble_device: Global<JObject<'static>>,
+        ble_device: EnsureSendGlobalObject,
         cancellation: tokio::sync::oneshot::Receiver<AndroidSession>,
     ) {
         trace!("Starting I/O task for peripheral {:?}", peripheral_handle);
-        {
+        let ble_device_clone: EnsureSendGlobalObject = {
             let session = {
                 let android_session_inner = weak_session_inner.upgrade().unwrap();
                 AndroidSession::wrap_inner(android_session_inner)
             };
-            let jenv = match session.jvm.get_env() {
-                Ok(jenv) => jenv,
+            let vm = session.jvm.clone();
+            let result = vm.attach_current_thread(|env| env.new_global_ref(&ble_device.0));
+            match result {
+                Ok(ble_device_clone) => ble_device_clone.into(),
                 Err(err) => {
-                    let thread_id = std::thread::current().id();
-                    error!(
-                        "Failed to query JNI env in new IO task {err}, thread id = {thread_id:?}"
-                    );
-
+                    error!("Failed to create global ref for BLE device: {err}");
                     return;
                 }
-            };
-        }
+            }
+        };
 
         let cmd_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(io_bus).fuse();
         tokio::pin!(cmd_stream);
@@ -2456,7 +2636,7 @@ impl AndroidSession {
             peripheral_handle,
             cmd_stream,
             weak_session_inner.clone(),
-            ble_device.clone(),
+            ble_device_clone,
             cancellation,
         )
         .await
@@ -2590,8 +2770,13 @@ impl AndroidSession {
         // If not, look up a device, register a connection handler and associate both
         // with the android_peripheral...
 
-        let mut jenv = self.jvm.get_env()?;
-        let result: Result<GlobalRef> = jenv.with_local_frame(2, |jenv| {
+        let vm = self.jvm.clone();
+        let (io_bus_tx, io_bus_rx, global_device_ref, io_cancellation_rx): (
+            _,
+            _,
+            Global<JObject<'static>>,
+            _,
+        ) = vm.attach_current_thread::<_, _, Error>(|jenv| {
             let address_str = MAC(mac).to_string(); // Will format in uppercase as Android expects
             debug!(
                 "calling get_device_for_address with addr = {}",
@@ -2610,34 +2795,41 @@ impl AndroidSession {
                 ],
             )?;
             //JValue::Long(android_peripheral.peripheral_handle.0 as jlong).as_jni()])?;
-            Ok(jenv.new_global_ref(ble_device_ref)?)
-        });
-        let global_device_ref = result?;
 
-        let (io_bus_tx, io_bus_rx) = mpsc::unbounded_channel();
-        let (io_cancellation_tx, io_cancellation_rx) = tokio::sync::oneshot::channel();
+            let global_device_ref: Global<JObject<'static>> =
+                jenv.new_global_ref(ble_device_ref)?;
 
-        {
-            let mut android_peripheral_guard = android_peripheral.state.write().unwrap();
+            let (io_bus_tx, io_bus_rx) = mpsc::unbounded_channel();
+            let (io_cancellation_tx, io_cancellation_rx) = tokio::sync::oneshot::channel();
 
-            android_peripheral_guard.ble_device = Some(global_device_ref.clone());
-            android_peripheral_guard.io_bus_tx = Some(io_bus_tx.clone());
-            android_peripheral_guard.io_task_cancellation = Some(io_cancellation_tx);
+            {
+                let mut android_peripheral_guard = android_peripheral.state.write().unwrap();
 
-            debug!("associated BluetoothDevice with peripheral and spawning IO task");
-        }
+                android_peripheral_guard.ble_device =
+                    Some(jenv.new_global_ref(&global_device_ref)?);
+                android_peripheral_guard.io_bus_tx = Some(io_bus_tx.clone());
+                android_peripheral_guard.io_task_cancellation = Some(io_cancellation_tx);
 
-        // Only give the IO task a weak reference to the session to avoid a ref cycle...
+                debug!("associated BluetoothDevice with peripheral and spawning IO task");
+            }
+
+            // Only give the IO task a weak reference to the session to avoid a ref cycle...
+
+            Ok((io_bus_tx, io_bus_rx, global_device_ref, io_cancellation_rx))
+        })?;
 
         let thread_id = std::thread::current().id();
         error!("About to spawn new IO task from thread id = {thread_id:?}");
         let weak_session_inner = Arc::downgrade(&self.inner);
+        //let obj: EnsureSendGlobalObject = global_device_ref;
+        //let obj = EnsureSendGlobalObject(global_device_ref);
+        //let global_device_ref: Global<JObject<'static>> = Default::default();
         tokio::spawn(async move {
             AndroidSession::run_peripheral_io_task(
                 peripheral_handle,
                 io_bus_rx,
                 weak_session_inner,
-                global_device_ref,
+                global_device_ref.into(),
                 io_cancellation_rx,
             )
             .await
@@ -2667,12 +2859,14 @@ impl AndroidSession {
         }
     }
 
-    fn get_ble_device(&self, android_peripheral: &AndroidPeripheral) -> Result<GlobalRef> {
+    fn get_ble_device(
+        &self, jenv: &mut Env, android_peripheral: &AndroidPeripheral,
+    ) -> Result<Global<JObject<'static>>> {
         debug!("get_ble_device");
 
         let state_guard = android_peripheral.state.read().unwrap();
         match state_guard.ble_device {
-            Some(ref ble_device) => Ok(ble_device.clone()),
+            Some(ref ble_device) => Ok(jenv.new_global_ref(ble_device)?),
             None => {
                 // Would likely represent an internal bug, since we shouldn't be dealing with
                 // requests that need a BleDevice if we are disconnected
@@ -2682,14 +2876,15 @@ impl AndroidSession {
     }
 
     fn gatt_service_from_handle(
-        &self, android_peripheral: &AndroidPeripheral, service_handle: ServiceHandle,
-    ) -> Result<GlobalRef> {
+        &self, jenv: &mut Env, android_peripheral: &AndroidPeripheral,
+        service_handle: ServiceHandle,
+    ) -> Result<Global<JObject<'static>>> {
         // Only need a 'read' lock since the DashMap has interior mutability.
         let guard = android_peripheral.state.read().unwrap();
 
         let gatt_service = guard.gatt_services.get(&service_handle);
         match gatt_service {
-            Some(gatt_service) => Ok(gatt_service.clone()),
+            Some(gatt_service) => Ok(jenv.new_global_ref(gatt_service.value())?),
             None => {
                 warn!("Request made with invalid service handle");
                 Err(Error::InvalidStateReference)
@@ -2698,32 +2893,32 @@ impl AndroidSession {
     }
 
     fn gatt_characteristic_from_handle(
-        &self, android_peripheral: &AndroidPeripheral, characteristic_handle: CharacteristicHandle,
-    ) -> Result<GlobalRef> {
+        &self, jenv: &mut Env, android_peripheral: &AndroidPeripheral,
+        characteristic_handle: CharacteristicHandle,
+    ) -> Result<Global<JObject<'static>>> {
         // Only need a 'read' lock since the DashMap has interior mutability.
         let guard = android_peripheral.state.read().unwrap();
 
         let result = match guard.gatt_characteristics.get(&characteristic_handle) {
-            Some(gatt_characteristic) => Ok(gatt_characteristic.clone()),
+            Some(gatt_characteristic) => Ok(jenv.new_global_ref(gatt_characteristic.value())?),
             None => {
                 warn!("Request made with invalid characteristic handle");
                 Err(Error::InvalidStateReference)
             }
         };
 
-        // NB: we explicitly assign to `result` to ensure the temporary lock guard
-        // is dropped before returning the result (will get a compiler error otherwise)
         result
     }
 
     fn gatt_descriptor_from_handle(
-        &self, android_peripheral: &AndroidPeripheral, descriptor_handle: DescriptorHandle,
-    ) -> Result<GlobalRef> {
+        &self, jenv: &mut Env, android_peripheral: &AndroidPeripheral,
+        descriptor_handle: DescriptorHandle,
+    ) -> Result<Global<JObject<'static>>> {
         // Only need a 'read' lock since the DashMap has interior mutability.
         let guard = android_peripheral.state.read().unwrap();
 
         let result = match guard.gatt_descriptors.get(&descriptor_handle) {
-            Some(gatt_descriptor) => Ok(gatt_descriptor.clone()),
+            Some(gatt_descriptor) => Ok(jenv.new_global_ref(gatt_descriptor.value())?),
             None => {
                 warn!("Request made with invalid descriptor handle");
                 Err(Error::InvalidStateReference)
@@ -2736,7 +2931,7 @@ impl AndroidSession {
     }
 
     fn get_service_handle<'a>(
-        &self, jenv: &mut JNIEnv<'a>, android_peripheral: &AndroidPeripheral, service: &JObject<'a>,
+        &self, jenv: &mut Env<'a>, android_peripheral: &AndroidPeripheral, service: &JObject<'a>,
     ) -> Result<ServiceHandle> {
         let id = try_call_int_method(
             jenv,
@@ -2748,7 +2943,7 @@ impl AndroidSession {
     }
 
     fn get_service_uuid<'a>(
-        &self, jenv: &mut JNIEnv<'a>, android_peripheral: &AndroidPeripheral, service: &JObject<'a>,
+        &self, jenv: &mut Env<'a>, android_peripheral: &AndroidPeripheral, service: &JObject<'a>,
     ) -> Result<uuid::Uuid> {
         match try_call_string_method(
             jenv,
@@ -2767,16 +2962,14 @@ impl AndroidSession {
     }
 
     fn index_services_list(
-        &self, android_peripheral: &AndroidPeripheral, services: &JList,
+        &self, jenv: &mut Env, android_peripheral: &AndroidPeripheral, services: &JList,
     ) -> Result<()> {
-        let mut jenv = self.jvm.get_env()?;
-
         // Only need a 'read' lock since the DashMap has interior mutability.
         let guard = android_peripheral.state.read().unwrap();
 
-        let mut list_iter = services.iter(&mut jenv)?;
-        while let Some(service) = list_iter.next(&mut jenv)? {
-            let service_handle = self.get_service_handle(&mut jenv, android_peripheral, &service)?;
+        let mut list_iter = services.iter(jenv)?;
+        while let Some(service) = list_iter.next(jenv)? {
+            let service_handle = self.get_service_handle(jenv, android_peripheral, &service)?;
             if !guard.gatt_services.contains_key(&service_handle) {
                 let global_ref = jenv.new_global_ref(service)?;
                 guard.gatt_services.insert(service_handle, global_ref);
@@ -2787,7 +2980,7 @@ impl AndroidSession {
     }
 
     fn get_characteristic_handle<'a>(
-        &self, jenv: &mut JNIEnv<'a>, android_peripheral: &AndroidPeripheral,
+        &self, jenv: &mut Env<'a>, android_peripheral: &AndroidPeripheral,
         characteristic: &JObject<'a>,
     ) -> Result<CharacteristicHandle> {
         let id = try_call_int_method(
@@ -2801,7 +2994,7 @@ impl AndroidSession {
     }
 
     fn get_characteristic_uuid<'a>(
-        &self, jenv: &mut JNIEnv<'a>, android_peripheral: &AndroidPeripheral,
+        &self, jenv: &mut Env<'a>, android_peripheral: &AndroidPeripheral,
         characteristic: &JObject<'a>,
     ) -> Result<uuid::Uuid> {
         match try_call_string_method(
@@ -2821,7 +3014,7 @@ impl AndroidSession {
     }
 
     fn get_characteristic_properties<'a>(
-        &self, jenv: &mut JNIEnv<'a>, android_peripheral: &AndroidPeripheral,
+        &self, jenv: &mut Env<'a>, android_peripheral: &AndroidPeripheral,
         characteristic: &JObject<'a>,
     ) -> Result<CharacteristicProperties> {
         let props = try_call_int_method(
@@ -2837,7 +3030,7 @@ impl AndroidSession {
     // we ask Java to associate a unique ID with each BluetoothGattDescriptor that can be
     // used with JNI
     fn get_descriptor_handle<'a>(
-        &self, jenv: &mut JNIEnv<'a>, ble_device: &JObject<'a>, descriptor: &JObject<'a>,
+        &self, jenv: &mut Env<'a>, ble_device: &JObject<'a>, descriptor: &JObject<'a>,
     ) -> Result<DescriptorHandle> {
         let id = try_call_int_method(
             jenv,
@@ -2852,7 +3045,7 @@ impl AndroidSession {
     }
 
     fn get_descriptor_uuid<'a>(
-        &self, jenv: &mut JNIEnv<'a>, android_peripheral: &AndroidPeripheral, descriptor: &JObject<'a>,
+        &self, jenv: &mut Env<'a>, android_peripheral: &AndroidPeripheral, descriptor: &JObject<'a>,
     ) -> Result<uuid::Uuid> {
         match try_call_string_method(
             jenv,
@@ -3016,13 +3209,13 @@ const fn map_gatt_status(status: jint, zero_success: bool) -> AndroidGattStatus 
 }
 
 fn notify_io_callback_from_jni<F>(
-    env: &mut JNIEnv,
-    session_handle: JHandle<AndroidSession>,
+    env: &mut jni::Env,
+    session_handle: AndroidSessionHandle,
     device_handle: jlong, // u32 peripheral handle
     function_name_debug: &str,
     func: F,
 ) where
-    F: FnOnce(&mut JNIEnv, AndroidSession, PeripheralHandle) -> Result<IOCmd>,
+    F: FnOnce(&mut jni::Env, AndroidSession, PeripheralHandle) -> Result<IOCmd>,
 {
     // Note: we currently avoid using env.throw() to propogate errors as exceptions
     // to Jave, to avoid additional complexity having to handle callback exceptions
@@ -3068,16 +3261,51 @@ impl BackendSession for AndroidSession {
         true
     }
     fn supports_select_peripheral(&self) -> bool {
-        false
+        true // Android supports device selection via Companion API
     }
     fn supports_declare_peripheral(&self) -> bool {
         true
     }
+    fn has_scan_permission(&self) -> bool {
+        let vm = self.jvm.clone();
+        let result: std::result::Result<bool, jni::errors::Error> =
+            vm.attach_current_thread(|jenv| {
+                let ble_session = self.jsession.as_ref();
+                let result = unsafe {
+                    jenv.call_method_unchecked(
+                        ble_session,
+                        self.check_bluetooth_scan_permission_method,
+                        jni::signature::ReturnType::Primitive(jni::signature::Primitive::Boolean),
+                        &[],
+                    )?
+                };
+                Ok(result.z()?)
+            });
+        result.unwrap_or(false)
+    }
+
+    fn has_connect_permission(&self) -> bool {
+        let vm = self.jvm.clone();
+        let result: std::result::Result<bool, jni::errors::Error> =
+            vm.attach_current_thread(|jenv| {
+                let ble_session = self.jsession.as_ref();
+                let result = unsafe {
+                    jenv.call_method_unchecked(
+                        ble_session,
+                        self.check_bluetooth_connect_permission_method,
+                        jni::signature::ReturnType::Primitive(jni::signature::Primitive::Boolean),
+                        &[],
+                    )?
+                };
+                Ok(result.z()?)
+            });
+        result.unwrap_or(false)
+    }
 
     async fn start_scanning(&self, filter: &Filter) -> Result<()> {
         debug!("BLE: backend: start_scanning");
-        let mut jenv = self.jvm.get_env()?;
-        jenv.with_local_frame(10, |jenv| {
+        let vm = self.jvm.clone();
+        vm.attach_current_thread(|jenv| {
             let ble_session = self.jsession.as_ref();
 
             try_call_void_method(jenv, ble_session, self.scanner_config_reset_method, &[])?;
@@ -3091,17 +3319,41 @@ impl BackendSession for AndroidSession {
                     &[JValue::Object(&uuid_jstr).as_jni()],
                 )?;
             }
-            try_call_void_method(jenv, ble_session, self.start_scanning_method, &[])?;
-            debug!("BLE: backend: start_scanning: jni done");
+            let status = unsafe {
+                jenv.call_method_unchecked(
+                    ble_session,
+                    self.start_scanning_method,
+                    jni::signature::ReturnType::Primitive(jni::signature::Primitive::Int),
+                    &[],
+                )?
+            };
+            let status_code = status.i()?;
+            debug!(
+                "BLE: backend: start_scanning: jni done with status {}",
+                status_code
+            );
 
-            Ok(())
+            match status_code {
+                SCAN_STATUS_SUCCESS => Ok(()),
+                SCAN_STATUS_PERMISSION_DENIED => {
+                    Err(Error::Other(anyhow!("BLUETOOTH_SCAN permission denied")))
+                }
+                SCAN_STATUS_ALREADY_SCANNING => Err(Error::Other(anyhow!("Already scanning"))),
+                SCAN_STATUS_BLUETOOTH_UNAVAILABLE => {
+                    Err(Error::Other(anyhow!("Bluetooth unavailable")))
+                }
+                _ => Err(Error::Other(anyhow!(
+                    "Unknown scan status: {}",
+                    status_code
+                ))),
+            }
         })
     }
 
     async fn stop_scanning(&self) -> Result<()> {
         debug!("BLE: backend: stop_scanning");
-        let mut jenv = self.jvm.get_env()?;
-        jenv.with_local_frame(1, |jenv| {
+        let vm = self.jvm.clone();
+        vm.attach_current_thread(|jenv| {
             let ble_session = self.jsession.as_ref();
 
             try_call_void_method(jenv, ble_session, self.stop_scanning_method, &[])?;
@@ -3112,7 +3364,42 @@ impl BackendSession for AndroidSession {
     }
 
     async fn select_peripheral(&self, filter: &Filter) -> Result<PeripheralHandle> {
-        Err(Error::Unsupported)
+        debug!("BLE: backend: select_peripheral");
+        let vm = self.jvm.clone();
+        let status: std::result::Result<i32, jni::errors::Error> =
+            vm.attach_current_thread(|jenv| {
+                let ble_session = self.jsession.as_ref();
+                let result = unsafe {
+                    jenv.call_method_unchecked(
+                        ble_session,
+                        self.select_device_method,
+                        jni::signature::ReturnType::Primitive(jni::signature::Primitive::Int),
+                        &[],
+                    )?
+                };
+                Ok(result.i()?)
+            });
+
+        match status {
+            Ok(SELECT_DEVICE_STATUS_SUCCESS) => {
+                // The device selection process has started asynchronously
+                // The actual device will be delivered via the companion callback
+                // For now, return an error indicating this is an async process
+                Err(Error::Other(anyhow!("Device selection started - result will be delivered asynchronously via companion callback")))
+            },
+            Ok(SELECT_DEVICE_STATUS_UNSUPPORTED) => {
+                Err(Error::Other(anyhow!("Device selection not supported on this Android version or companion API not configured")))
+            },
+            Ok(SELECT_DEVICE_STATUS_ERROR) => {
+                Err(Error::Other(anyhow!("Error starting device selection")))
+            },
+            Ok(status) => {
+                Err(Error::Other(anyhow!("Unknown select device status: {}", status)))
+            },
+            Err(e) => {
+                Err(Error::Other(anyhow!("JNI error during device selection: {}", e)))
+            }
+        }
     }
 
     fn declare_peripheral(&self, address: Address, name: String) -> Result<PeripheralHandle> {
@@ -3217,7 +3504,6 @@ impl BackendSession for AndroidSession {
     ) -> Result<()> {
         debug!("gatt_service_discover_includes");
         let android_peripheral = self.android_peripheral_from_handle(peripheral_handle)?;
-        let gatt_service = self.gatt_service_from_handle(&android_peripheral, service_handle)?;
 
         // Android doesn't explicitly expose include / characteristic discovery, since they
         // are also discovered as part of service discovery, so we can simply enumerate
@@ -3226,31 +3512,37 @@ impl BackendSession for AndroidSession {
         // (Since this doesn't directly interact with the GATT server we don't handle this
         //  via the IO task.)
 
-        let mut jenv = self.jvm.get_env()?;
+        let vm = self.jvm.clone();
+        vm.attach_current_thread::<_, _, Error>(|jenv| {
+            let gatt_service =
+                self.gatt_service_from_handle(jenv, &android_peripheral, service_handle)?;
 
-        debug!("calling JNI getServiceIncludes()");
-        let includes = try_call_object_method(
-            &mut jenv,
-            &self.jsession,
-            self.get_service_includes_method,
-            &[JValue::Object(&gatt_service).as_jni()],
-        )?;
-        let includes: JList = JList::from_env(&mut jenv, &includes)?;
-        debug!("enumerating includes...");
-        let mut list_iter = includes.iter(&mut jenv)?;
-        while let Some(included_service) = list_iter.next(&mut jenv)? {
-            let included_uuid =
-                self.get_service_uuid(&mut jenv, &android_peripheral, &included_service)?;
-            let included_service_handle =
-                self.get_service_handle(&mut jenv, &android_peripheral, &included_service)?;
-            debug!("notifying include: uuid = {}", &included_uuid);
-            let _ = self.backend_bus.send(BackendEvent::GattIncludedService {
-                peripheral_handle,
-                parent_service_handle: service_handle,
-                included_service_handle,
-                uuid: included_uuid,
-            });
-        }
+            debug!("calling JNI getServiceIncludes()");
+            let includes = try_call_object_method(
+                jenv,
+                &self.jsession,
+                self.get_service_includes_method,
+                &[JValue::Object(&gatt_service).as_jni()],
+            )?;
+            let includes = JList::cast_local(jenv, includes)?;
+            debug!("enumerating includes...");
+            let mut list_iter = includes.iter(jenv)?;
+            while let Some(included_service) = list_iter.next(jenv)? {
+                let included_uuid =
+                    self.get_service_uuid(jenv, &android_peripheral, &included_service)?;
+                let included_service_handle =
+                    self.get_service_handle(jenv, &android_peripheral, &included_service)?;
+                debug!("notifying include: uuid = {}", &included_uuid);
+                let _ = self.backend_bus.send(BackendEvent::GattIncludedService {
+                    peripheral_handle,
+                    parent_service_handle: service_handle,
+                    included_service_handle,
+                    uuid: included_uuid,
+                });
+            }
+
+            Ok(())
+        });
 
         // XXX: For better consistency with other platforms maybe we should
         // queue the completion to be delivered asynchronously?
@@ -3273,7 +3565,6 @@ impl BackendSession for AndroidSession {
 
         let android_peripheral = self.android_peripheral_from_handle(peripheral_handle)?;
         let peripheral_state = android_peripheral.inner.state.read().unwrap();
-        let gatt_service = self.gatt_service_from_handle(&android_peripheral, service_handle)?;
 
         // Android doesn't explicitly expose include / characteristic discovery, since they
         // are also discovered as part of service discovery, so we can simply enumerate
@@ -3282,39 +3573,45 @@ impl BackendSession for AndroidSession {
         // (Since this doesn't directly interact with the GATT server we don't handle this
         //  via the IO task.)
 
-        let mut jenv = self.jvm.get_env()?;
+        let vm = self.jvm.clone();
+        vm.attach_current_thread::<_, _, Error>(|jenv| {
+            let gatt_service =
+                self.gatt_service_from_handle(jenv, &android_peripheral, service_handle)?;
 
-        debug!("calling JNI getServiceCharacteristics()");
-        let characteristics = try_call_object_method(
-            &mut jenv,
-            &self.jsession,
-            self.get_service_characteristics_method,
-            &[JValue::Object(&gatt_service).as_jni()],
-        )?;
-        let characteristics: JList = JList::from_env(&mut jenv, &characteristics)?;
-        debug!("enumerating characteristics...");
-        let mut list_iter = characteristics.iter(&mut jenv)?;
-        while let Some(characteristic) = list_iter.next(&mut jenv)? {
-            let characteristic_uuid =
-                self.get_characteristic_uuid(&mut jenv, &android_peripheral, &characteristic)?;
-            let characteristic_handle =
-                self.get_characteristic_handle(&mut jenv, &android_peripheral, &characteristic)?;
-            let characteristic_global_ref = jenv.new_global_ref(&characteristic)?;
-            peripheral_state
-                .gatt_characteristics
-                .insert(characteristic_handle, characteristic_global_ref);
+            debug!("calling JNI getServiceCharacteristics()");
+            let characteristics = try_call_object_method(
+                jenv,
+                &self.jsession,
+                self.get_service_characteristics_method,
+                &[JValue::Object(&gatt_service).as_jni()],
+            )?;
+            let characteristics = JList::cast_local(jenv, characteristics)?;
+            debug!("enumerating characteristics...");
+            let mut list_iter = characteristics.iter(jenv)?;
+            while let Some(characteristic) = list_iter.next(jenv)? {
+                let characteristic_uuid =
+                    self.get_characteristic_uuid(jenv, &android_peripheral, &characteristic)?;
+                let characteristic_handle =
+                    self.get_characteristic_handle(jenv, &android_peripheral, &characteristic)?;
+                let characteristic_global_ref = jenv.new_global_ref(&characteristic)?;
+                peripheral_state
+                    .gatt_characteristics
+                    .insert(characteristic_handle, characteristic_global_ref);
 
-            let properties =
-                self.get_characteristic_properties(&mut jenv, &android_peripheral, &characteristic)?;
-            debug!("notifying characteristics: uuid = {}", &characteristic_uuid);
-            let _ = self.backend_bus.send(BackendEvent::GattCharacteristic {
-                peripheral_handle,
-                service_handle,
-                characteristic_handle,
-                uuid: characteristic_uuid,
-                properties,
-            });
-        }
+                let properties =
+                    self.get_characteristic_properties(jenv, &android_peripheral, &characteristic)?;
+                debug!("notifying characteristics: uuid = {}", &characteristic_uuid);
+                let _ = self.backend_bus.send(BackendEvent::GattCharacteristic {
+                    peripheral_handle,
+                    service_handle,
+                    characteristic_handle,
+                    uuid: characteristic_uuid,
+                    properties,
+                });
+            }
+
+            Ok(())
+        });
 
         // XXX: For better consistency with other platforms maybe we should
         // queue the completion to be delivered asynchronously?
@@ -3399,9 +3696,6 @@ impl BackendSession for AndroidSession {
     ) -> Result<()> {
         let android_peripheral = self.android_peripheral_from_handle(peripheral_handle)?;
         let peripheral_state = android_peripheral.inner.state.read().unwrap();
-        let ble_device = self.get_ble_device(&android_peripheral)?;
-        let gatt_characteristic =
-            self.gatt_characteristic_from_handle(&android_peripheral, characteristic_handle)?;
 
         // Android doesn't explicitly expose descriptor discovery, since they
         // are also discovered as part of service discovery, so we can simply enumerate
@@ -3410,39 +3704,49 @@ impl BackendSession for AndroidSession {
         // (Since this doesn't directly interact with the GATT server we don't handle this
         //  via the IO task.)
 
-        let mut jenv = self.jvm.get_env()?;
-
-        debug!("calling JNI getCharacteristicDescriptors()");
-        let descriptors = try_call_object_method(
-            &mut jenv,
-            &self.jsession,
-            self.get_characteristic_descriptors_method,
-            &[JValue::Object(&gatt_characteristic).as_jni()],
-        )?;
-        let descriptors: JList = JList::from_env(&mut jenv, &descriptors)?;
-
-        debug!("enumerating descriptors...");
-        let mut list_iter = descriptors.iter(&mut jenv)?;
-        while let Some(descriptor) = list_iter.next(&mut jenv)? {
-            let descriptor_uuid =
-                self.get_descriptor_uuid(&mut jenv, &android_peripheral, &descriptor)?;
-            // This will call through to Java to allocate a new ID for the descriptor that
-            // can be passed over JNI
-            let descriptor_handle =
-                self.get_descriptor_handle(&mut jenv, &ble_device, &descriptor)?;
-            let descriptor_global_ref = jenv.new_global_ref(descriptor)?;
-            peripheral_state
-                .gatt_descriptors
-                .insert(descriptor_handle, descriptor_global_ref);
-            debug!("notifying descriptors: uuid = {}", &descriptor_uuid);
-            let _ = self.backend_bus.send(BackendEvent::GattDescriptor {
-                peripheral_handle,
-                service_handle,
+        let vm = self.jvm.clone();
+        vm.attach_current_thread::<_, _, Error>(|jenv| {
+            let ble_device = self.get_ble_device(jenv, &android_peripheral)?;
+            let gatt_characteristic = self.gatt_characteristic_from_handle(
+                jenv,
+                &android_peripheral,
                 characteristic_handle,
-                descriptor_handle,
-                uuid: descriptor_uuid,
-            });
-        }
+            )?;
+
+            debug!("calling JNI getCharacteristicDescriptors()");
+            let descriptors = try_call_object_method(
+                jenv,
+                &self.jsession,
+                self.get_characteristic_descriptors_method,
+                &[JValue::Object(&gatt_characteristic).as_jni()],
+            )?;
+            let descriptors = JList::cast_local(jenv, descriptors)?;
+
+            debug!("enumerating descriptors...");
+            let mut list_iter = descriptors.iter(jenv)?;
+            while let Some(descriptor) = list_iter.next(jenv)? {
+                let descriptor_uuid =
+                    self.get_descriptor_uuid(jenv, &android_peripheral, &descriptor)?;
+                // This will call through to Java to allocate a new ID for the descriptor that
+                // can be passed over JNI
+                let descriptor_handle =
+                    self.get_descriptor_handle(jenv, &ble_device, &descriptor)?;
+                let descriptor_global_ref = jenv.new_global_ref(descriptor)?;
+                peripheral_state
+                    .gatt_descriptors
+                    .insert(descriptor_handle, descriptor_global_ref);
+                debug!("notifying descriptors: uuid = {}", &descriptor_uuid);
+                let _ = self.backend_bus.send(BackendEvent::GattDescriptor {
+                    peripheral_handle,
+                    service_handle,
+                    characteristic_handle,
+                    descriptor_handle,
+                    uuid: descriptor_uuid,
+                });
+            }
+
+            Ok(())
+        });
 
         // XXX: For better consistency with other platforms maybe we should
         // queue the completion to be delivered asynchronously?

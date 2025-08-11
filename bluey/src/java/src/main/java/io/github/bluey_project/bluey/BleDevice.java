@@ -1,4 +1,4 @@
-package co.bluey;
+package io.github.bluey_project.bluey;
 
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothGatt;

@@ -861,6 +861,9 @@ impl BackendSession for WinrtSession {
     fn supports_declare_peripheral(&self) -> bool {
         true
     }
+    fn has_scan_permission(&self) -> bool {
+        true // Windows doesn't require explicit scan permissions
+    }
 
     async fn start_scanning(&self, filter: &Filter) -> Result<()> {
         trace!("winrt: start scanning");

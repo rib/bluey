@@ -39,6 +39,12 @@ impl BackendSession for FakeSession {
     fn supports_declare_peripheral(&self) -> bool {
         true
     }
+    fn has_scan_permission(&self) -> bool {
+        true
+    }
+    fn has_connect_permission(&self) -> bool {
+        true
+    }
 
     async fn start_scanning(&self, filter: &Filter) -> Result<()> {
         todo!();

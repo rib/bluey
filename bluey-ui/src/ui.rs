@@ -2,23 +2,34 @@
 // positives atm :(
 #![allow(dead_code)]
 
-use std::{collections::{HashSet, HashMap, VecDeque}, time::{Instant, Duration}};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    time::{Duration, Instant},
+};
 
-use bluey::{peripheral::Peripheral, uuid::BluetoothUuid, service::Service, characteristic::{Characteristic, CharacteristicProperties}, descriptor::Descriptor};
-use log::{info, debug};
-use serde::{de, Deserialize};
-use uuid::Uuid;
+use bluey::{
+    characteristic::{Characteristic, CharacteristicProperties},
+    descriptor::Descriptor,
+    peripheral::Peripheral,
+    service::Service,
+    uuid::BluetoothUuid,
+};
 use lazy_static::lazy_static;
+use serde::{de, Deserialize};
+use tracing::{debug, info, trace};
+use uuid::Uuid;
 
-use tokio::sync::mpsc::UnboundedSender;
-use egui::{self, RichText, Color32, Ui};
 use crate::ble::{self, BleRequest};
+use egui::{self, Color32, RichText, Ui};
+use tokio::sync::mpsc::UnboundedSender;
 
 const HEART_RATE_MEASUREMENT_CHARACTERISTIC_UUID: Uuid = bluey::uuid::uuid_from_u16(0x2A37);
 
 const SERVICES_DB_JSON: &str = include_str!("../bluetooth-numbers-database/service_uuids.json");
-const CHARACTERISTICS_DB_JSON: &str = include_str!("../bluetooth-numbers-database/characteristic_uuids.json");
-const DESCRIPTORS_DB_JSON: &str = include_str!("../bluetooth-numbers-database/descriptor_uuids.json");
+const CHARACTERISTICS_DB_JSON: &str =
+    include_str!("../bluetooth-numbers-database/characteristic_uuids.json");
+const DESCRIPTORS_DB_JSON: &str =
+    include_str!("../bluetooth-numbers-database/descriptor_uuids.json");
 const COMPANIES_DB_JSON: &str = include_str!("../bluetooth-numbers-database/company_ids.json");
 
 pub fn deserialize_bluetooth_db_uuid<'de, D>(deserializer: D) -> Result<Uuid, D::Error>
@@ -31,10 +42,10 @@ where
         Ok(uuid) => Ok(uuid),
         Err(_) => match u16::from_str_radix(&s, 16) {
             Ok(short) => Ok(Uuid::from_u16(short)),
-            Err(_) => {
-                Ok(Uuid::from_u32(u32::from_str_radix(&s, 16).map_err(de::Error::custom)?))
-            }
-        }
+            Err(_) => Ok(Uuid::from_u32(
+                u32::from_str_radix(&s, 16).map_err(de::Error::custom)?,
+            )),
+        },
     }
 }
 
@@ -42,27 +53,27 @@ where
 struct BluetoothUuidInfo {
     name: String,
     identifier: String,
-    #[serde(deserialize_with="deserialize_bluetooth_db_uuid")]
+    #[serde(deserialize_with = "deserialize_bluetooth_db_uuid")]
     uuid: Uuid,
-    source: String
+    source: String,
 }
 
 #[derive(Deserialize, Debug)]
 struct CharacteristicDBEntry {
     name: String,
     identifier: String,
-    #[serde(deserialize_with="deserialize_bluetooth_db_uuid")]
+    #[serde(deserialize_with = "deserialize_bluetooth_db_uuid")]
     uuid: Uuid,
-    source: String
+    source: String,
 }
 
 #[derive(Deserialize, Debug)]
 struct DescriptorDBEntry {
     name: String,
     identifier: String,
-    #[serde(deserialize_with="deserialize_bluetooth_db_uuid")]
+    #[serde(deserialize_with = "deserialize_bluetooth_db_uuid")]
     uuid: Uuid,
-    source: String
+    source: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -71,7 +82,9 @@ struct CompanyName {
     name: String,
 }
 
-fn index_uuids(uuids: &'static Vec<BluetoothUuidInfo>) -> HashMap<Uuid, &'static BluetoothUuidInfo> {
+fn index_uuids(
+    uuids: &'static Vec<BluetoothUuidInfo>,
+) -> HashMap<Uuid, &'static BluetoothUuidInfo> {
     let mut index = HashMap::new();
 
     for i in 0..uuids.len() {
@@ -90,14 +103,18 @@ pub fn index_companies() -> HashMap<u16, &'static String> {
 }
 
 lazy_static! {
-    static ref SERVICES_DB: Vec<BluetoothUuidInfo> = serde_json::from_str(&SERVICES_DB_JSON).unwrap();
-    static ref CHARACTERISTICS_DB: Vec<BluetoothUuidInfo> = serde_json::from_str(&CHARACTERISTICS_DB_JSON).unwrap();
-    static ref DESCRIPTORS_DB: Vec<BluetoothUuidInfo> = serde_json::from_str(&DESCRIPTORS_DB_JSON).unwrap();
+    static ref SERVICES_DB: Vec<BluetoothUuidInfo> =
+        serde_json::from_str(&SERVICES_DB_JSON).unwrap();
+    static ref CHARACTERISTICS_DB: Vec<BluetoothUuidInfo> =
+        serde_json::from_str(&CHARACTERISTICS_DB_JSON).unwrap();
+    static ref DESCRIPTORS_DB: Vec<BluetoothUuidInfo> =
+        serde_json::from_str(&DESCRIPTORS_DB_JSON).unwrap();
     static ref COMPANIES_DB: Vec<CompanyName> = serde_json::from_str(&COMPANIES_DB_JSON).unwrap();
-
     static ref SERVICE_UUIDS: HashMap<Uuid, &'static BluetoothUuidInfo> = index_uuids(&SERVICES_DB);
-    static ref CHARACTERISTIC_UUIDS: HashMap<Uuid, &'static BluetoothUuidInfo> = index_uuids(&CHARACTERISTICS_DB);
-    static ref DESCRIPTOR_UUIDS: HashMap<Uuid, &'static BluetoothUuidInfo> = index_uuids(&DESCRIPTORS_DB);
+    static ref CHARACTERISTIC_UUIDS: HashMap<Uuid, &'static BluetoothUuidInfo> =
+        index_uuids(&CHARACTERISTICS_DB);
+    static ref DESCRIPTOR_UUIDS: HashMap<Uuid, &'static BluetoothUuidInfo> =
+        index_uuids(&DESCRIPTORS_DB);
     static ref COMPANY_NAMES: HashMap<u16, &'static String> = index_companies();
 }
 
@@ -109,8 +126,16 @@ pub enum Event {
     UpdateCharacteristicValue(Characteristic, Vec<u8>),
     UpdateDescriptorValue(Descriptor, Vec<u8>),
 
+    // Session capabilities and permissions
+    SessionInfo {
+        supports_scanning: bool,
+        supports_select_peripheral: bool,
+        has_scan_permission: bool,
+        has_connect_permission: bool,
+    },
+
     // Show a notice to the user...
-    ShowText(log::Level, String),
+    ShowText(Level, String),
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -118,16 +143,18 @@ enum BleState {
     Idle,
     Scanning,
     Connecting,
-    Connected
+    Connected,
 }
 impl Default for BleState {
-    fn default() -> Self { BleState::Idle }
+    fn default() -> Self {
+        BleState::Idle
+    }
 }
 
 struct Notice {
-    level: log::Level,
+    level: Level,
     text: String,
-    timestamp: Instant
+    timestamp: Instant,
 }
 
 const NOTICE_TIMEOUT_SECS: u64 = 7;
@@ -135,7 +162,6 @@ const NOTICE_TIMEOUT_SECS: u64 = 7;
 #[derive(Debug)]
 pub struct PeripheralState {
     //peripheral: Peripheral,
-
     connected: bool,
 
     name: String,
@@ -159,7 +185,7 @@ pub struct ServiceState {
     back_label: String,
 
     included: Vec<Service>,
-    characteristics: Vec<Characteristic>
+    characteristics: Vec<Characteristic>,
 }
 
 #[derive(Debug)]
@@ -176,7 +202,7 @@ pub struct CharacteristicState {
     last_read: Option<String>,
     //last_read_val: Option<Vec<u8>>,
     extra_props: Vec<(String, String)>,
-    descriptors: Vec<Descriptor>
+    descriptors: Vec<Descriptor>,
 }
 
 #[derive(Debug)]
@@ -189,13 +215,20 @@ pub struct DescriptorState {
 
 #[derive(Default)]
 pub struct State {
+    pub is_mobile: bool,
+
     state: BleState,
+
+    // Session capabilities and permissions
+    supports_scanning: bool,
+    supports_select_peripheral: bool,
+    has_scan_permission: bool,
+    has_connect_permission: bool,
 
     notices: VecDeque<Notice>,
     peripherals: HashSet<Peripheral>,
     //selected_peripheral: Option<Peripheral>,
     //connected_peripheral: Option<Peripheral>,
-
     selected_peripheral: Option<Peripheral>,
     selected_peripheral_state: Option<PeripheralState>,
     selected_service_id: Option<Uuid>,
@@ -207,32 +240,55 @@ pub struct State {
     selected_descriptor_state: Option<DescriptorState>,
 }
 
-impl State {
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum Level {
+    Info,
+    Warn,
+    Error,
+}
 
-    fn update_selected_peripheral_property(&mut self, peripheral: &Peripheral, property_id: bluey::PeripheralPropertyId) {
+impl State {
+    pub fn post_notice(&mut self, level: Level, text: String) {
+        let notice = Notice {
+            level,
+            text,
+            timestamp: Instant::now(),
+        };
+        self.notices.push_back(notice);
+    }
+
+    fn update_selected_peripheral_property(
+        &mut self, peripheral: &Peripheral, property_id: bluey::PeripheralPropertyId,
+    ) {
         match property_id {
             bluey::PeripheralPropertyId::Name => {
                 let name = peripheral.name().unwrap_or(format!("Unknown"));
                 self.selected_peripheral_state.as_mut().unwrap().back_label = format!("< {name}");
                 self.selected_peripheral_state.as_mut().unwrap().name = name;
-            },
-            bluey::PeripheralPropertyId::AddressType => {
-                self.selected_peripheral_state.as_mut().unwrap().address_type = peripheral.address_type().map_or("Unknown".to_string(),
-                    |addr_type| format!("{addr_type:?}"));
             }
-            bluey::PeripheralPropertyId::Rssi => { /* queried each frame */},
-            bluey::PeripheralPropertyId::TxPower => { /* queried each frame */},
+            bluey::PeripheralPropertyId::AddressType => {
+                self.selected_peripheral_state
+                    .as_mut()
+                    .unwrap()
+                    .address_type = peripheral
+                    .address_type()
+                    .map_or("Unknown".to_string(), |addr_type| format!("{addr_type:?}"));
+            }
+            bluey::PeripheralPropertyId::Rssi => { /* queried each frame */ }
+            bluey::PeripheralPropertyId::TxPower => { /* queried each frame */ }
             bluey::PeripheralPropertyId::ManufacturerData => {
-                self.selected_peripheral_state.as_mut().unwrap().manufacturer_data = peripheral.all_manufacturer_data();
-            },
-            bluey::PeripheralPropertyId::ServiceData => {
-
-            },
+                self.selected_peripheral_state
+                    .as_mut()
+                    .unwrap()
+                    .manufacturer_data = peripheral.all_manufacturer_data();
+            }
+            bluey::PeripheralPropertyId::ServiceData => {}
             bluey::PeripheralPropertyId::ServiceIds => {
-                self.selected_peripheral_state.as_mut().unwrap().service_ids = peripheral.service_ids();
-            },
-            bluey::PeripheralPropertyId::PrimaryServices => {},
-            _ => {},
+                self.selected_peripheral_state.as_mut().unwrap().service_ids =
+                    peripheral.service_ids();
+            }
+            bluey::PeripheralPropertyId::PrimaryServices => {}
+            _ => {}
         }
     }
 
@@ -240,22 +296,36 @@ impl State {
         self.selected_peripheral_state.as_mut().unwrap().services = peripheral.primary_services();
     }
 
-    fn update_selected_service_includes(&mut self, _peripheral: &Peripheral, service: &Service) -> Result<(), anyhow::Error> {
+    fn update_selected_service_includes(
+        &mut self, _peripheral: &Peripheral, service: &Service,
+    ) -> Result<(), anyhow::Error> {
         self.selected_service_state.as_mut().unwrap().included = service.included_services()?;
         Ok(())
     }
 
-    fn update_selected_service_characteristics(&mut self, _peripheral: &Peripheral, service: &Service) -> Result<(), anyhow::Error> {
-        self.selected_service_state.as_mut().unwrap().characteristics = service.characteristics()?;
+    fn update_selected_service_characteristics(
+        &mut self, _peripheral: &Peripheral, service: &Service,
+    ) -> Result<(), anyhow::Error> {
+        self.selected_service_state
+            .as_mut()
+            .unwrap()
+            .characteristics = service.characteristics()?;
         Ok(())
     }
 
-     fn update_selected_characteristic_descriptors(&mut self, _peripheral: &Peripheral, _service: &Service, characteristic: &Characteristic) -> Result<(), anyhow::Error> {
-        self.selected_characteristic_state.as_mut().unwrap().descriptors = characteristic.descriptors()?;
+    fn update_selected_characteristic_descriptors(
+        &mut self, _peripheral: &Peripheral, _service: &Service, characteristic: &Characteristic,
+    ) -> Result<(), anyhow::Error> {
+        self.selected_characteristic_state
+            .as_mut()
+            .unwrap()
+            .descriptors = characteristic.descriptors()?;
         Ok(())
     }
 
-    fn select_adapter(&mut self, request_peripheral_disconnect: bool, ble_tx: &UnboundedSender<ble::BleRequest>) {
+    fn select_adapter(
+        &mut self, request_peripheral_disconnect: bool, ble_tx: &UnboundedSender<ble::BleRequest>,
+    ) {
         debug!("select_adapter");
         if request_peripheral_disconnect {
             if let Some(peripheral) = self.selected_peripheral.as_ref() {
@@ -269,7 +339,10 @@ impl State {
         self.state = BleState::Idle;
     }
 
-    fn select_peripheral(&mut self, peripheral: &Peripheral, connected: bool, ble_tx: &UnboundedSender<ble::BleRequest>) {
+    fn select_peripheral(
+        &mut self, peripheral: &Peripheral, connected: bool,
+        ble_tx: &UnboundedSender<ble::BleRequest>,
+    ) {
         let peripheral_state = PeripheralState {
             //peripheral: peripheral.clone(),
             name: "Unknown".to_string(),
@@ -279,12 +352,15 @@ impl State {
             address_type: "Unknown".to_string(),
             service_ids: peripheral.service_ids(),
             services: peripheral.primary_services(),
-            manufacturer_data: peripheral.all_manufacturer_data()
+            manufacturer_data: peripheral.all_manufacturer_data(),
         };
         self.selected_peripheral = Some(peripheral.clone());
         self.selected_peripheral_state = Some(peripheral_state);
         self.update_selected_peripheral_property(peripheral, bluey::PeripheralPropertyId::Name);
-        self.update_selected_peripheral_property(peripheral, bluey::PeripheralPropertyId::AddressType);
+        self.update_selected_peripheral_property(
+            peripheral,
+            bluey::PeripheralPropertyId::AddressType,
+        );
 
         self.selected_service = None;
         self.selected_characteristic = None;
@@ -296,7 +372,6 @@ impl State {
     }
 
     fn select_service(&mut self, service: &Service, ble_tx: &UnboundedSender<ble::BleRequest>) {
-
         let uuid = service.uuid().unwrap();
         let name = if let Some(service_info) = SERVICE_UUIDS.get(&uuid) {
             service_info.name.clone()
@@ -321,8 +396,9 @@ impl State {
         let _ = ble_tx.send(BleRequest::DiscoverGattCharacteristics(service.clone()));
     }
 
-    fn select_characteristic(&mut self, characteristic: &Characteristic, ble_tx: &UnboundedSender<ble::BleRequest>) {
-
+    fn select_characteristic(
+        &mut self, characteristic: &Characteristic, ble_tx: &UnboundedSender<ble::BleRequest>,
+    ) {
         let uuid = characteristic.uuid().unwrap();
         let name = if let Some(info) = CHARACTERISTIC_UUIDS.get(&uuid) {
             info.name.clone()
@@ -336,8 +412,15 @@ impl State {
         let mut subscribable = false;
 
         if let Ok(props) = characteristic.properties() {
-            readable = if props & CharacteristicProperties::READ != CharacteristicProperties::NONE { true } else { false };
-            subscribable = if props & (CharacteristicProperties::INDICATE | CharacteristicProperties::NOTIFY) != CharacteristicProperties::NONE {
+            readable = if props & CharacteristicProperties::READ != CharacteristicProperties::NONE {
+                true
+            } else {
+                false
+            };
+            subscribable = if props
+                & (CharacteristicProperties::INDICATE | CharacteristicProperties::NOTIFY)
+                != CharacteristicProperties::NONE
+            {
                 true
             } else {
                 false
@@ -358,16 +441,22 @@ impl State {
             if props & CharacteristicProperties::INDICATE != CharacteristicProperties::NONE {
                 properties.push("Indicate".to_string());
             }
-            if props & CharacteristicProperties::AUTHENTICATED_SIGNED_WRITES != CharacteristicProperties::NONE {
+            if props & CharacteristicProperties::AUTHENTICATED_SIGNED_WRITES
+                != CharacteristicProperties::NONE
+            {
                 properties.push("Authenticated Signed Writes".to_string());
             }
-            if props & CharacteristicProperties::EXTENDED_PROPERTIES != CharacteristicProperties::NONE {
+            if props & CharacteristicProperties::EXTENDED_PROPERTIES
+                != CharacteristicProperties::NONE
+            {
                 properties.push("Extended Properties".to_string());
             }
             if props & CharacteristicProperties::RELIABLE_WRITES != CharacteristicProperties::NONE {
                 properties.push("Reliable Writes".to_string());
             }
-            if props & CharacteristicProperties::WRITABLE_AUXILIARIES != CharacteristicProperties::NONE {
+            if props & CharacteristicProperties::WRITABLE_AUXILIARIES
+                != CharacteristicProperties::NONE
+            {
                 properties.push("Writable Auxiliaries".to_string());
             }
         }
@@ -419,14 +508,21 @@ impl State {
                             props.push(("Contact Detection".to_string(), "SUPPORTED".to_string()));
                             debug!("> Contact detection: SUPPORTED");
                             if data[0] & 0x2 == 0x2 {
-                                props.push(("Contact Status".to_string(), "IN-CONTACT".to_string()));
+                                props
+                                    .push(("Contact Status".to_string(), "IN-CONTACT".to_string()));
                                 debug!(">> Contact status: IN-CONTACT");
                             } else {
-                                props.push(("Contact Status".to_string(), "NOT IN-CONTACT".to_string()));
+                                props.push((
+                                    "Contact Status".to_string(),
+                                    "NOT IN-CONTACT".to_string(),
+                                ));
                                 debug!(">> Contact status: NOT IN-CONTACT");
                             }
                         } else {
-                            props.push(("Contact Detection".to_string(), "NOT SUPPORTED".to_string()));
+                            props.push((
+                                "Contact Detection".to_string(),
+                                "NOT SUPPORTED".to_string(),
+                            ));
                             debug!("> Contact detection: NOT SUPPORTED");
                             if data[0] & 0x2 == 0x2 {
                                 debug!(">> Contact status: DEFAULT = IN-CONTACT");
@@ -439,7 +535,10 @@ impl State {
                             debug!("> Energy Expenditure: PRESENT");
                             rr_start += 2;
                         } else {
-                            props.push(("Energy Expenditure".to_string(), "NOT PRESENT".to_string()));
+                            props.push((
+                                "Energy Expenditure".to_string(),
+                                "NOT PRESENT".to_string(),
+                            ));
                             debug!("> Energy Expenditure: NOT PRESENT");
                         }
                         if data[0] & 0x10 == 0x10 {
@@ -463,8 +562,7 @@ impl State {
                         let n_rrs = (data.len() - rr_start) / 2;
                         for i in 0..n_rrs {
                             let pos = rr_start + 2 * i;
-                            let rr_fixed =
-                                u16::from_le_bytes([data[pos], data[pos + 1]]);
+                            let rr_fixed = u16::from_le_bytes([data[pos], data[pos + 1]]);
                             let rr_seconds: f32 = rr_fixed as f32 / 1024.0f32;
                             props.push((format!("RR[{i}]"), format!("{rr_seconds}")));
                             debug!("> RR[{}] = {}", i, rr_seconds);
@@ -476,7 +574,9 @@ impl State {
         }
     }
 
-    fn select_descriptor(&mut self, descriptor: &Descriptor, _ble_tx: &UnboundedSender<ble::BleRequest>) {
+    fn select_descriptor(
+        &mut self, descriptor: &Descriptor, _ble_tx: &UnboundedSender<ble::BleRequest>,
+    ) {
         let uuid = descriptor.uuid().unwrap();
         let name = if let Some(info) = DESCRIPTOR_UUIDS.get(&uuid) {
             info.name.clone()
@@ -516,12 +616,11 @@ impl State {
 
         if self.notices.len() > 0 {
             for notice in self.notices.iter() {
-                let mut rt = RichText::new(notice.text.clone())
-                    .strong();
+                let mut rt = RichText::new(notice.text.clone()).strong();
                 let (fg, bg) = match notice.level {
-                    log::Level::Warn => (Color32::YELLOW, Color32::DARK_GRAY),
-                    log::Level::Error => (Color32::WHITE, Color32::DARK_RED),
-                    _ => (Color32::TRANSPARENT, Color32::BLACK)
+                    Level::Warn => (Color32::YELLOW, Color32::DARK_GRAY),
+                    Level::Error => (Color32::WHITE, Color32::DARK_RED),
+                    _ => (Color32::TRANSPARENT, Color32::BLACK),
                 };
                 rt = rt.color(fg).background_color(bg);
                 ui.label(rt);
@@ -529,16 +628,24 @@ impl State {
         }
     }
 
-    pub fn draw_peripherals_list(&mut self, ui: &mut Ui, ble_tx: &UnboundedSender<ble::BleRequest>) {
+    pub fn draw_peripherals_list(
+        &mut self, ui: &mut Ui, ble_tx: &UnboundedSender<ble::BleRequest>,
+    ) {
         egui::Grid::new("devices").show(ui, |ui| {
-
             let mut newly_selected_peripheral = None;
             for peripheral in self.peripherals.iter() {
                 if let Some(name) = peripheral.name() {
                     //let address = peripheral.address();
                     //let address_str = address.to_string();
                     //ui.label(name);
-                    if ui.selectable_value(&mut self.selected_peripheral, Some(peripheral.clone()), name).changed() {
+                    if ui
+                        .selectable_value(
+                            &mut self.selected_peripheral,
+                            Some(peripheral.clone()),
+                            name,
+                        )
+                        .changed()
+                    {
                         newly_selected_peripheral = Some(peripheral.clone());
                     }
                     //ui.label(address_str);
@@ -556,7 +663,6 @@ impl State {
             }
         });
     }
-
 
     pub fn draw_nav_header(&mut self, ui: &mut Ui, ble_tx: &UnboundedSender<ble::BleRequest>) {
         ui.horizontal(|ui| {
@@ -603,18 +709,14 @@ impl State {
                     //let state = self.selected_service_state.as_ref().unwrap();
                     //ui.label(&state.name);
                 }
-
             } else {
                 //let state = self.selected_peripheral_state.as_ref().unwrap();
                 //ui.label(&state.name);
             }
-
         });
     }
 
-    pub fn draw_peripheral_page(&mut self, ui: &mut Ui,
-        ble_tx: &UnboundedSender<ble::BleRequest>)
-    {
+    pub fn draw_peripheral_page(&mut self, ui: &mut Ui, ble_tx: &UnboundedSender<ble::BleRequest>) {
         let peripheral = self.selected_peripheral.as_ref().unwrap();
         let state = self.selected_peripheral_state.as_ref().unwrap();
 
@@ -642,7 +744,6 @@ impl State {
                 ui.label(format!("Unknown dBm"));
             }
             ui.end_row();
-
         });
 
         if state.services.len() > 0 {
@@ -652,11 +753,25 @@ impl State {
                 for service in state.services.iter() {
                     if let Ok(uuid) = service.uuid() {
                         if let Some(service_info) = SERVICE_UUIDS.get(&uuid) {
-                            if ui.selectable_value(&mut self.selected_service, Some(service.clone()), &service_info.name).changed() {
+                            if ui
+                                .selectable_value(
+                                    &mut self.selected_service,
+                                    Some(service.clone()),
+                                    &service_info.name,
+                                )
+                                .changed()
+                            {
                                 newly_selected_service = Some(service.clone());
                             }
                         } else {
-                            if ui.selectable_value(&mut self.selected_service, Some(service.clone()), uuid.to_string()).changed() {
+                            if ui
+                                .selectable_value(
+                                    &mut self.selected_service,
+                                    Some(service.clone()),
+                                    uuid.to_string(),
+                                )
+                                .changed()
+                            {
                                 newly_selected_service = Some(service.clone());
                             }
                         }
@@ -672,11 +787,25 @@ impl State {
             egui::CollapsingHeader::new("Services").show(ui, |ui| {
                 for uuid in state.service_ids.iter() {
                     if let Some(service_info) = SERVICE_UUIDS.get(uuid) {
-                        if ui.selectable_value(&mut self.selected_service_id, Some(*uuid), &service_info.name).changed() {
+                        if ui
+                            .selectable_value(
+                                &mut self.selected_service_id,
+                                Some(*uuid),
+                                &service_info.name,
+                            )
+                            .changed()
+                        {
                             newly_selected_service = Some(*uuid);
                         }
                     } else {
-                        if ui.selectable_value(&mut self.selected_service_id, Some(*uuid), uuid.to_string()).changed() {
+                        if ui
+                            .selectable_value(
+                                &mut self.selected_service_id,
+                                Some(*uuid),
+                                uuid.to_string(),
+                            )
+                            .changed()
+                        {
                             newly_selected_service = Some(*uuid);
                         }
                     }
@@ -705,8 +834,7 @@ impl State {
         }
     }
 
-    pub fn draw_service_page(&mut self, ui: &mut Ui, ble_tx: &UnboundedSender<ble::BleRequest>)
-    {
+    pub fn draw_service_page(&mut self, ui: &mut Ui, ble_tx: &UnboundedSender<ble::BleRequest>) {
         //let service = self.selected_service.as_ref().unwrap();
         let state = self.selected_service_state.as_ref().unwrap();
 
@@ -737,11 +865,25 @@ impl State {
                 for service in state.included.iter() {
                     if let Ok(uuid) = service.uuid() {
                         if let Some(service_info) = SERVICE_UUIDS.get(&uuid) {
-                            if ui.selectable_value(&mut newly_selected_service, Some(service.clone()), &service_info.name).changed() {
+                            if ui
+                                .selectable_value(
+                                    &mut newly_selected_service,
+                                    Some(service.clone()),
+                                    &service_info.name,
+                                )
+                                .changed()
+                            {
                                 newly_selected_service = Some(service.clone());
                             }
                         } else {
-                            if ui.selectable_value(&mut newly_selected_service, Some(service.clone()), uuid.to_string()).changed() {
+                            if ui
+                                .selectable_value(
+                                    &mut newly_selected_service,
+                                    Some(service.clone()),
+                                    uuid.to_string(),
+                                )
+                                .changed()
+                            {
                                 newly_selected_service = Some(service.clone());
                             }
                         }
@@ -756,11 +898,25 @@ impl State {
             for characteristic in state.characteristics.iter() {
                 if let Ok(uuid) = characteristic.uuid() {
                     if let Some(characteristic_info) = CHARACTERISTIC_UUIDS.get(&uuid) {
-                        if ui.selectable_value(&mut self.selected_characteristic, Some(characteristic.clone()), &characteristic_info.name).changed() {
+                        if ui
+                            .selectable_value(
+                                &mut self.selected_characteristic,
+                                Some(characteristic.clone()),
+                                &characteristic_info.name,
+                            )
+                            .changed()
+                        {
                             newly_selected_characteristic = Some(characteristic.clone());
                         }
                     } else {
-                        if ui.selectable_value(&mut self.selected_characteristic, Some(characteristic.clone()), uuid.to_string()).changed() {
+                        if ui
+                            .selectable_value(
+                                &mut self.selected_characteristic,
+                                Some(characteristic.clone()),
+                                uuid.to_string(),
+                            )
+                            .changed()
+                        {
                             newly_selected_characteristic = Some(characteristic.clone());
                         }
                     }
@@ -777,9 +933,9 @@ impl State {
         }
     }
 
-    pub fn draw_characteristic_page(&mut self, ui: &mut Ui,
-        ble_tx: &UnboundedSender<ble::BleRequest>)
-    {
+    pub fn draw_characteristic_page(
+        &mut self, ui: &mut Ui, ble_tx: &UnboundedSender<ble::BleRequest>,
+    ) {
         let characteristic = self.selected_characteristic.as_ref().unwrap();
         let state = self.selected_characteristic_state.as_ref().unwrap();
 
@@ -815,10 +971,14 @@ impl State {
             }
             if state.subscribable {
                 if ui.button("Subscribe").clicked() {
-                    let _ = ble_tx.send(BleRequest::SubscribeGattCharacteristic(characteristic.clone()));
+                    let _ = ble_tx.send(BleRequest::SubscribeGattCharacteristic(
+                        characteristic.clone(),
+                    ));
                 }
                 if ui.button("Unsubscribe").clicked() {
-                    let _ = ble_tx.send(BleRequest::UnsubscribeGattCharacteristic(characteristic.clone()));
+                    let _ = ble_tx.send(BleRequest::UnsubscribeGattCharacteristic(
+                        characteristic.clone(),
+                    ));
                 }
             }
         });
@@ -828,11 +988,25 @@ impl State {
             for descriptor in state.descriptors.iter() {
                 if let Ok(uuid) = descriptor.uuid() {
                     if let Some(info) = DESCRIPTOR_UUIDS.get(&uuid) {
-                        if ui.selectable_value(&mut self.selected_descriptor, Some(descriptor.clone()), &info.name).changed() {
+                        if ui
+                            .selectable_value(
+                                &mut self.selected_descriptor,
+                                Some(descriptor.clone()),
+                                &info.name,
+                            )
+                            .changed()
+                        {
                             newly_selected_descriptor = Some(descriptor.clone());
                         }
                     } else {
-                        if ui.selectable_value(&mut self.selected_descriptor, Some(descriptor.clone()), uuid.to_string()).changed() {
+                        if ui
+                            .selectable_value(
+                                &mut self.selected_descriptor,
+                                Some(descriptor.clone()),
+                                uuid.to_string(),
+                            )
+                            .changed()
+                        {
                             newly_selected_descriptor = Some(descriptor.clone());
                         }
                     }
@@ -862,9 +1036,7 @@ impl State {
         }
     }
 
-    pub fn draw_descriptor_page(&self, ui: &mut Ui,
-        ble_tx: &UnboundedSender<ble::BleRequest>)
-    {
+    pub fn draw_descriptor_page(&self, ui: &mut Ui, ble_tx: &UnboundedSender<ble::BleRequest>) {
         let descriptor = self.selected_descriptor.as_ref().unwrap();
         let state = self.selected_descriptor_state.as_ref().unwrap();
         egui::Grid::new("descriptor_state").show(ui, |ui| {
@@ -897,40 +1069,145 @@ impl State {
         }
     }
 
-    pub fn draw(&mut self, ctx: &egui::Context, ble_tx: &UnboundedSender<ble::BleRequest>) {
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            self.draw_notices_header(ui);
+    fn draw_connect_buttons(
+        &mut self, ui: &mut egui::Ui, ble_tx: &UnboundedSender<ble::BleRequest>,
+    ) {
+        if cfg!(target_os = "android") {
+            // DEBUG
+            ui.label(egui::RichText::new(format!("State = {:?}", self.state)).size(20.0));
+        }
+        match self.state {
+            BleState::Idle => {
+                ui.horizontal(|ui| {
+                    // Show scan-related button
+                    if self.supports_scanning {
+                        // Check permission only on Android
+                        if cfg!(target_os = "android")
+                            && (!self.has_scan_permission || !self.has_connect_permission)
+                        {
+                            ui.label(egui::RichText::new("Bluey-UI needs to request scan + connect permissions before you can scan or connect to nearby devices.").size(20.0));
+                            if ui.button("Request Permission").clicked() {
+                                debug!("Requesting scan + connect permissions...");
+                                let _ = ble_tx.send(BleRequest::RequestScanConnectPermission);
+                            }
+                            ui.add_enabled_ui(false, |ui| {
+                                ui.button("Scan")
+                            });
+                        } else {
+                            if ui.button("Scan").clicked() {
+                                debug!("Start scanning...");
+                                let _ = ble_tx.send(BleRequest::StartScanning);
+                                self.state = BleState::Scanning;
+                            }
+                        }
+                    } else {
+                        ui
+                            .label(egui::RichText::new("No scanning support").size(20.0));
+                    }
 
-            match self.state {
-                BleState::Idle => {
-                    if ui.button("Scan").clicked() {
-                        debug!("Start scanning...");
-                        let _ = ble_tx.send(BleRequest::StartScanning);
-                        self.state = BleState::Scanning;
+                    // Show device selection button if supported
+                    if self.supports_select_peripheral {
+                        if ui.button("Select Device").clicked() {
+                            debug!("Start device selection...");
+                            let _ = ble_tx.send(BleRequest::SelectDevice);
+                        }
+                    }
+                });
+            }
+            BleState::Scanning => {
+                ui.horizontal(|ui| {
+                    if ui.button("Stop Scanning").clicked() {
+                        let _ = ble_tx.send(BleRequest::StopScanning);
+                        self.state = BleState::Idle;
+                    }
+                    ui.spinner();
+                });
+            }
+            BleState::Connecting => {
+                ui.horizontal(|ui| {
+                    ui.label("Connecting...");
+                    ui.spinner();
+                });
+            }
+            BleState::Connected => {
+                self.draw_nav_header(ui, ble_tx);
+            }
+        }
+    }
+
+    fn draw_mobile_connect_buttons(
+        &mut self, ui: &mut egui::Ui, ble_tx: &UnboundedSender<ble::BleRequest>,
+    ) {
+        if cfg!(target_os = "android") {
+            // DEBUG
+            ui.label(egui::RichText::new(format!("State = {:?}", self.state)).size(20.0));
+        }
+        match self.state {
+            BleState::Idle => {
+                // Show scan-related button
+                if self.supports_scanning {
+                    // Check permission only on Android
+                    if !self.has_scan_permission || !self.has_connect_permission {
+                        ui.label(egui::RichText::new("Bluey-UI needs to request scan + connect permissions before you can scan or connect to nearby devices.").size(20.0));
+                        if ui.button("Request Permission").clicked() {
+                            debug!("Requesting scan + connect permissions...");
+                            let _ = ble_tx.send(BleRequest::RequestScanConnectPermission);
+                        }
+                        ui.add_enabled_ui(false, |ui| ui.button("Scan"));
+                    } else {
+                        if ui.button("Scan").clicked() {
+                            debug!("Start scanning...");
+                            let _ = ble_tx.send(BleRequest::StartScanning);
+                            self.state = BleState::Scanning;
+                        }
+                    }
+                } else {
+                    ui.label(egui::RichText::new("No scanning support").size(20.0));
+                }
+
+                ui.add_space(12.0);
+                ui.label(egui::RichText::new("Alternatively use the Android Companion API to request a single device to connect with").size(20.0));
+                // Show device selection button if supported
+                if self.supports_select_peripheral {
+                    if ui
+                        .button(egui::RichText::new("Select Device").size(20.0))
+                        .clicked()
+                    {
+                        debug!("Start device selection...");
+                        let _ = ble_tx.send(BleRequest::SelectDevice);
                     }
                 }
-                BleState::Scanning => {
-                    ui.horizontal(|ui| {
-                        if ui.button("Stop Scanning").clicked() {
-                            let _ = ble_tx.send(BleRequest::StopScanning);
-                            self.state = BleState::Idle;
-                        }
-                        ui.spinner();
-                    });
-                }
-                BleState::Connecting => {
-                    ui.horizontal(|ui| {
-                        ui.label("Connecting...");
-                        ui.spinner();
-                    });
-                }
-                BleState::Connected  => {
-                    self.draw_nav_header(ui, ble_tx);
-                }
             }
-        });
+            BleState::Scanning => {
+                if ui
+                    .button(egui::RichText::new("Stop Scanning").size(20.0))
+                    .clicked()
+                {
+                    let _ = ble_tx.send(BleRequest::StopScanning);
+                    self.state = BleState::Idle;
+                }
+                ui.spinner();
+            }
+            BleState::Connecting => {
+                ui.label(egui::RichText::new("Connecting...").size(20.0));
+                ui.spinner();
+            }
+            BleState::Connected => {
+                self.draw_nav_header(ui, ble_tx);
+            }
+        }
+    }
 
-        if cfg!(not(target_os="android")) {
+    pub fn draw(&mut self, ctx: &egui::Context, ble_tx: &UnboundedSender<ble::BleRequest>) {
+        trace!("UI: draw");
+
+        if !self.is_mobile {
+            egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+                self.draw_notices_header(ui);
+
+                self.draw_connect_buttons(ui, ble_tx);
+            });
+
             if self.state == BleState::Idle || self.state == BleState::Scanning {
                 egui::SidePanel::left("devices")
                     .resizable(false)
@@ -941,90 +1218,132 @@ impl State {
             }
         }
         egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    ui.add_space(12.0);
 
-            if cfg!(target_os="android") {
-                self.draw_peripherals_list(ui, ble_tx);
-            }
+                    if self.is_mobile {
+                        ui.vertical_centered_justified(|ui| {
+                            self.draw_notices_header(ui);
+                            self.draw_peripherals_list(ui, ble_tx);
+                            self.draw_connect_buttons(ui, ble_tx);
+                        });
+                    }
+                    ui.add_space(12.0);
 
-            if self.selected_descriptor.is_some() {
-                assert!(self.selected_descriptor_state.is_some());
-                self.draw_descriptor_page(ui, ble_tx);
-            } else if self.selected_characteristic.is_some() {
-                assert!(self.selected_characteristic_state.is_some());
-                self.draw_characteristic_page(ui, ble_tx);
-            } else if self.selected_service.is_some() {
-                assert!(self.selected_service_state.is_some());
-                self.draw_service_page(ui, ble_tx);
-            } else if self.selected_peripheral.is_some() {
-                assert!(self.selected_peripheral_state.is_some());
-                self.draw_peripheral_page(ui, ble_tx);
-            }
-
+                    if self.selected_descriptor.is_some() {
+                        assert!(self.selected_descriptor_state.is_some());
+                        self.draw_descriptor_page(ui, ble_tx);
+                    } else if self.selected_characteristic.is_some() {
+                        assert!(self.selected_characteristic_state.is_some());
+                        self.draw_characteristic_page(ui, ble_tx);
+                    } else if self.selected_service.is_some() {
+                        assert!(self.selected_service_state.is_some());
+                        self.draw_service_page(ui, ble_tx);
+                    } else if self.selected_peripheral.is_some() {
+                        assert!(self.selected_peripheral_state.is_some());
+                        self.draw_peripheral_page(ui, ble_tx);
+                    }
+                });
         });
     }
 
     pub fn handle_event(&mut self, event: Event, ble_tx: &UnboundedSender<ble::BleRequest>) {
         match event {
-            Event::Ble(bluey::Event::PeripheralFound { peripheral, name, address, ..}) => {
+            Event::SessionInfo {
+                supports_scanning,
+                supports_select_peripheral,
+                has_scan_permission,
+                has_connect_permission,
+            } => {
+                self.supports_scanning = supports_scanning;
+                self.supports_select_peripheral = supports_select_peripheral;
+                self.has_scan_permission = has_scan_permission;
+                self.has_connect_permission = has_connect_permission;
+            }
+            Event::Ble(bluey::Event::PeripheralFound {
+                peripheral,
+                name,
+                address,
+                ..
+            }) => {
                 if !self.peripherals.contains(&peripheral) {
                     self.peripherals.insert(peripheral);
                     info!("UI: peripheral found {name}: {address}");
                 }
-            },
-            Event::Ble(bluey::Event::PeripheralPropertyChanged { ref peripheral, property_id, ..}) => {
-                match &self.selected_peripheral {
-                    Some(selected) if selected == peripheral => {
-                        self.update_selected_peripheral_property(peripheral, property_id);
-                    }
-                    _ => {}
-                }
             }
-            Event::Ble(bluey::Event::PeripheralConnected { peripheral, ..}) => {
+            Event::Ble(bluey::Event::PeripheralPropertyChanged {
+                ref peripheral,
+                property_id,
+                ..
+            }) => match &self.selected_peripheral {
+                Some(selected) if selected == peripheral => {
+                    self.update_selected_peripheral_property(peripheral, property_id);
+                }
+                _ => {}
+            },
+            Event::Ble(bluey::Event::PeripheralConnected { peripheral, .. }) => {
                 self.select_peripheral(&peripheral, true, ble_tx);
                 self.state = BleState::Connected;
                 let _ = ble_tx.send(BleRequest::DiscoverGattServices(peripheral.clone()));
             }
-            Event::Ble(bluey::Event::PeripheralDisconnected { peripheral, ..}) => {
+            Event::Ble(bluey::Event::PeripheralDisconnected { peripheral, .. }) => {
                 if let Some(selected) = self.selected_peripheral.as_ref() {
                     if &peripheral == selected {
                         self.select_adapter(false, ble_tx);
-                        self.notices.push_back(Notice { level: log::Level::Error, text: format!("Peripheral Disconnected"), timestamp: Instant::now() });
+                        self.post_notice(Level::Error, "Peripheral Disconnected".to_string());
                     }
                 }
             }
-            Event::Ble(bluey::Event::PeripheralPrimaryGattServicesComplete { peripheral, .. })=> {
-                match &self.selected_peripheral {
-                    Some(selected) if selected == &peripheral => {
-                        self.update_selected_peripheral_services(&peripheral);
-                    }
-                    _ => {}
+            Event::Ble(bluey::Event::PeripheralPrimaryGattServicesComplete {
+                peripheral, ..
+            }) => match &self.selected_peripheral {
+                Some(selected) if selected == &peripheral => {
+                    self.update_selected_peripheral_services(&peripheral);
                 }
-            }
-            Event::Ble(bluey::Event::ServiceIncludedGattServicesComplete { peripheral, service, .. }) => {
-                match &self.selected_service {
-                    Some(selected) if selected == &service => {
-                        self.update_selected_service_includes(&peripheral, &service);
-                    }
-                    _ => {}
+                _ => {}
+            },
+            Event::Ble(bluey::Event::ServiceIncludedGattServicesComplete {
+                peripheral,
+                service,
+                ..
+            }) => match &self.selected_service {
+                Some(selected) if selected == &service => {
+                    self.update_selected_service_includes(&peripheral, &service);
                 }
-            }
-            Event::Ble(bluey::Event::ServiceGattCharacteristicsComplete { peripheral, service, .. }) => {
-                match &self.selected_service {
-                    Some(selected) if selected == &service => {
-                        self.update_selected_service_characteristics(&peripheral, &service);
-                    }
-                    _ => {}
+                _ => {}
+            },
+            Event::Ble(bluey::Event::ServiceGattCharacteristicsComplete {
+                peripheral,
+                service,
+                ..
+            }) => match &self.selected_service {
+                Some(selected) if selected == &service => {
+                    self.update_selected_service_characteristics(&peripheral, &service);
                 }
-            }
-            Event::Ble(bluey::Event::ServiceGattDescriptorsComplete { peripheral, service, characteristic, .. }) => {
-                match &self.selected_characteristic {
-                    Some(selected) if selected == &characteristic => {
-                        self.update_selected_characteristic_descriptors(&peripheral, &service, &characteristic);
-                    }
-                    _ => {}
+                _ => {}
+            },
+            Event::Ble(bluey::Event::ServiceGattDescriptorsComplete {
+                peripheral,
+                service,
+                characteristic,
+                ..
+            }) => match &self.selected_characteristic {
+                Some(selected) if selected == &characteristic => {
+                    self.update_selected_characteristic_descriptors(
+                        &peripheral,
+                        &service,
+                        &characteristic,
+                    );
                 }
-            }
-            Event::Ble(bluey::Event::ServiceGattCharacteristicValueNotify { characteristic, value, .. }) => {
+                _ => {}
+            },
+            Event::Ble(bluey::Event::ServiceGattCharacteristicValueNotify {
+                characteristic,
+                value,
+                ..
+            }) => {
                 self.update_characteristic_value(&characteristic, value);
             }
             Event::UpdateCharacteristicValue(characteristic, value) => {
@@ -1034,11 +1353,9 @@ impl State {
                 self.update_descriptor_value(&descriptor, value);
             }
             Event::ShowText(level, text) => {
-                self.notices.push_back(Notice { level, text, timestamp: Instant::now() });
+                self.post_notice(level, text);
             }
-            _ => {
-
-            }
+            _ => {}
         }
     }
 }

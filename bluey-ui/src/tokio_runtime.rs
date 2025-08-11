@@ -1,12 +1,13 @@
-
-#[cfg(target_os="android")]
+// TODO: remove this and instead just assume that code using JNI will call attach_current_thread()
+/*
+#[cfg(target_os = "android")]
 fn configure_tokio_builder_for_android_jvm(builder: &mut tokio::runtime::Builder) {
     log::debug!("create_tokio_runtime_builder_android");
 
     let ctx = ndk_context::android_context();
     let jvm_ptr = ctx.vm();
-    let thread_attach_jvm = unsafe { jni::JavaVM::from_raw(jvm_ptr.cast()).unwrap() };
-    let thread_detach_jvm = unsafe { jni::JavaVM::from_raw(jvm_ptr.cast()).unwrap() };
+    let thread_attach_jvm = unsafe { jni::JavaVM::from_raw(jvm_ptr.cast()) };
+    let thread_detach_jvm = unsafe { jni::JavaVM::from_raw(jvm_ptr.cast()) };
 
     // To seamlessly allow us to call into Java via JNI within async rust code we need to ensure
     // that all Tokio Runtime threads get associated with a JNIEnv...
@@ -14,17 +15,20 @@ fn configure_tokio_builder_for_android_jvm(builder: &mut tokio::runtime::Builder
     builder.on_thread_start(move || {
         let thread_id = std::thread::current().id();
         log::debug!("JVM: Attaching tokio thread ({thread_id:?})");
-        thread_attach_jvm.attach_current_thread_permanently().unwrap();
+        thread_attach_jvm
+            .attach_current_thread(|_| -> jni::errors::Result<_> { Ok(())})
+            .unwrap();
     });
     builder.on_thread_stop(move || {
         // # Safety
         // We are certain that we won't access any invalid JNI pointers associated with
         // this thread after detaching the thread explicitly
-        unsafe { thread_detach_jvm.detach_current_thread(); }
+        let _ = thread_detach_jvm.detach_current_thread();
         let thread_id = std::thread::current().id();
         log::debug!("JVM: Detached tokio thread ({thread_id:?}");
     });
 }
+*/
 
 fn create_tokio_runtime_builder_default() -> tokio::runtime::Builder {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
@@ -38,8 +42,8 @@ fn create_tokio_runtime_builder_default() -> tokio::runtime::Builder {
 fn create_tokio_runtime_builder() -> tokio::runtime::Builder {
     let mut builder = create_tokio_runtime_builder_default();
 
-    #[cfg(target_os="android")]
-    configure_tokio_builder_for_android_jvm(&mut builder);
+    //#[cfg(target_os = "android")]
+    //configure_tokio_builder_for_android_jvm(&mut builder);
 
     builder
 }
