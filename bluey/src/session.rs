@@ -47,6 +47,9 @@ use crate::linux;
 #[cfg(target_arch = "wasm32")]
 use crate::web;
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use crate::corebluetooth;
+
 use anyhow::anyhow;
 
 #[derive(Clone, Debug)]
@@ -239,6 +242,8 @@ enum BackendSessionImpl {
     Linux(linux::session::LinuxSession),
     #[cfg(target_arch = "wasm32")]
     Web(web::session::WebSession),
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    CoreBluetooth(corebluetooth::session::CoreBluetoothSession),
     Fake(fake::session::FakeSession),
 }
 impl BackendSessionImpl {
@@ -252,6 +257,8 @@ impl BackendSessionImpl {
             BackendSessionImpl::Linux(linux) => linux,
             #[cfg(target_arch = "wasm32")]
             BackendSessionImpl::Web(web) => web,
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            BackendSessionImpl::CoreBluetooth(corebluetooth) => corebluetooth,
             BackendSessionImpl::Fake(fake) => fake,
         }
     }
@@ -433,6 +440,7 @@ pub(crate) struct DescriptorStateInner {
     pub(crate) uuid: Uuid,
 }
 
+#[derive(Clone, Debug)]
 pub struct Filter {
     pub(crate) service_uuids: HashSet<Uuid>,
 }
@@ -486,13 +494,15 @@ impl Drop for ScanSubscription {
 }
 */
 
+#[derive(Debug, Default)]
 pub enum Backend {
+    #[default]
     SystemDefault,
     Fake,
 }
 
 #[cfg(target_os = "android")]
-pub struct AndroidConfig<'local> {
+pub(crate) struct AndroidConfig<'local> {
     pub jni_env: jni::JNIEnv<'local>,
     pub activity: jni::objects::JObject<'local>,
     pub companion_chooser_request_code: Option<u32>,
@@ -513,11 +523,21 @@ impl<'a> AndroidConfig<'a> {
     }
 }*/
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[derive(Debug, Default)]
+pub(crate) struct CoreBluetoothConfig {
+    show_power_alert: bool,
+    restore_manager_uuid: Option<String>,
+}
+
 pub struct SessionConfig<'a> {
     backend: Backend,
 
     #[cfg(target_os = "android")]
-    pub android: Option<AndroidConfig<'a>>,
+    pub(crate) android: Option<AndroidConfig<'a>>,
+
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    pub(crate) corebluetooth: CoreBluetoothConfig,
 
     lifetime: PhantomData<&'a ()>,
 }
@@ -527,6 +547,9 @@ impl<'a> SessionConfig<'a> {
     pub fn new() -> SessionConfig<'a> {
         SessionConfig {
             backend: Backend::SystemDefault,
+
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            corebluetooth: Default::default(),
 
             lifetime: PhantomData,
         }
@@ -548,6 +571,25 @@ impl<'a> SessionConfig<'a> {
 
             lifetime: PhantomData,
         }
+    }
+
+    /// Configure whether the OS should automatically alert the user if they start a bluetooth session
+    /// while bluetooth is unavailable.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    pub fn set_show_power_alert(mut self, show: bool) -> Self {
+        self.corebluetooth.show_power_alert = show;
+        self
+    }
+
+    /// Request to restore the system state of a specific Core Bluetooth Central Manager.
+    ///
+    /// This can be used in special circumstances to try an maintain state continuity in situations
+    /// where devices go out of range for extended periods while maintaining a predictable state
+    /// (such as restoring characteristic subscriptions)
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    pub fn restore_manager_uuid(mut self, show: bool) -> Self {
+        self.corebluetooth.show_power_alert = show;
+        self
     }
 
     pub fn set_backend(mut self, backend: Backend) -> Self {
@@ -611,6 +653,12 @@ impl Session {
             Backend::SystemDefault => {
                 let implementation = web::session::WebSession::new(&config, backend_bus_tx)?;
                 BackendSessionImpl::Web(implementation)
+            }
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            Backend::SystemDefault => {
+                let implementation =
+                    corebluetooth::session::CoreBluetoothSession::new(backend_bus_tx);
+                BackendSessionImpl::CoreBluetooth(implementation)
             }
             Backend::Fake => {
                 let implementation = fake::session::FakeSession::new(&config, backend_bus_tx)?;

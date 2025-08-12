@@ -200,7 +200,7 @@ impl Peripheral {
 
     /// Reads the peripherals RSSI while connected.
     ///
-    /// A successfull read will also updated the cached RSSI value available via `rssi()`
+    /// A successful read will also updated the cached RSSI value available via `rssi()`
     ///
     /// # Portability
     /// It's currently not possible to explicitly read a peripheral's RSSI once connected to GATT

@@ -42,6 +42,9 @@ mod linux;
 #[cfg(target_arch = "wasm32")]
 mod web;
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod corebluetooth;
+
 mod fake;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -487,6 +490,27 @@ impl fmt::Debug for Event {
     }
 }*/
 
+#[derive(Debug)]
+pub enum State {
+    /// The system bluetooth interface is enabled / powered on and ready to access
+    Ready,
+
+    /// A system bluetooth interface exists but is currently disabled / powered off
+    Disabled,
+
+    /// The interface with the system's bluetooth has been reset and state is being re-established
+    Resetting,
+
+    /// The application doesn't currently have permission to access bluetooth
+    Unauthorized,
+
+    /// The system doesn't support bluetooth access
+    Unsupported,
+
+    /// The system is in an unknown (transitioning) state - wait for a state change event.
+    Unknown,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("The system is unable to communicate with this peripheral currently")]
@@ -503,6 +527,9 @@ pub enum Error {
 
     #[error("The system doesn't support this request / operation")]
     Unsupported,
+
+    #[error("Bluetooth is currently in a state that makes it unavailable")]
+    Unavailable(State),
 
     #[error(transparent)]
     Other(#[from] anyhow::Error),

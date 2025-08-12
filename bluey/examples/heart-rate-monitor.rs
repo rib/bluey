@@ -4,7 +4,6 @@ use bluey::session;
 use bluey::uuid::uuid_from_u16;
 use bluey::{self, characteristic::Characteristic, service::Service, PeripheralPropertyId};
 use futures::FutureExt;
-use log::println;
 use std::pin::Pin;
 use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
