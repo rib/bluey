@@ -851,7 +851,7 @@ impl WinrtSession {
 
 #[async_trait]
 impl BackendSession for WinrtSession {
-    fn start_scanning(&self, filter: &Filter) -> Result<()> {
+    async fn start_scanning(&self, filter: &Filter) -> Result<()> {
         trace!("winrt: start scanning");
 
         self.inner
@@ -883,7 +883,7 @@ impl BackendSession for WinrtSession {
         Ok(())
     }
 
-    fn stop_scanning(&self) -> Result<()> {
+    async fn stop_scanning(&self) -> Result<()> {
         trace!("winrt: stop scanning");
         self.inner.watcher.Stop()?;
         Ok(())

@@ -3063,7 +3063,7 @@ fn notify_io_callback_from_jni<F>(
 
 #[async_trait]
 impl BackendSession for AndroidSession {
-    fn start_scanning(&self, filter: &Filter) -> Result<()> {
+    async fn start_scanning(&self, filter: &Filter) -> Result<()> {
         debug!("BLE: backend: start_scanning");
         let mut jenv = self.jvm.get_env()?;
         jenv.with_local_frame(10, |jenv| {
@@ -3087,7 +3087,7 @@ impl BackendSession for AndroidSession {
         })
     }
 
-    fn stop_scanning(&self) -> Result<()> {
+    async fn stop_scanning(&self) -> Result<()> {
         debug!("BLE: backend: stop_scanning");
         let mut jenv = self.jvm.get_env()?;
         jenv.with_local_frame(1, |jenv| {

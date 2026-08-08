@@ -121,8 +121,8 @@ pub struct SessionInner {
 // track those relationshipts itself)
 #[async_trait]
 pub(crate) trait BackendSession {
-    fn start_scanning(&self, filter: &Filter) -> Result<()>;
-    fn stop_scanning(&self) -> Result<()>;
+    async fn start_scanning(&self, filter: &Filter) -> Result<()>;
+    async fn stop_scanning(&self) -> Result<()>;
 
     fn declare_peripheral(&self, address: Address, name: String) -> Result<PeripheralHandle>;
 
@@ -1712,7 +1712,7 @@ impl Session {
             return Err(Error::Other(anyhow!("Already scanning")));
         }
 
-        self.inner.backend.api().start_scanning(&filter)?;
+        self.inner.backend.api().start_scanning(&filter).await?;
         *is_scanning_guard = true;
 
         Ok(())
@@ -1724,7 +1724,7 @@ impl Session {
             return Err(Error::Other(anyhow!("Not currently scanning")));
         }
 
-        self.backend.api().stop_scanning()?;
+        self.backend.api().stop_scanning().await?;
         *is_scanning_guard = false;
 
         Ok(())

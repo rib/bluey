@@ -28,10 +28,10 @@ impl FakeSession {
 
 #[async_trait]
 impl BackendSession for FakeSession {
-    fn start_scanning(&self, filter: &Filter) -> Result<()> {
+    async fn start_scanning(&self, filter: &Filter) -> Result<()> {
         todo!();
     }
-    fn stop_scanning(&self) -> Result<()> {
+    async fn stop_scanning(&self) -> Result<()> {
         todo!();
     }
 
