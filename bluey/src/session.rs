@@ -11,9 +11,13 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::RwLock as StdRwLock;
 use std::sync::{Arc, Weak};
 use std::{char, default};
-use tokio::sync::Mutex;
-use tokio::sync::{broadcast, mpsc};
-use tokio_stream::wrappers::BroadcastStream;
+
+use ::{
+    tokio::sync::Mutex,
+    tokio::sync::{broadcast, mpsc},
+    tokio_stream::wrappers::BroadcastStream,
+};
+
 use uuid::Uuid;
 
 use crate::characteristic::{self, Characteristic, CharacteristicProperties, WriteType};
