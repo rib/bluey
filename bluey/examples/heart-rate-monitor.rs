@@ -10,6 +10,7 @@ use futures::FutureExt;
 use log::{info, trace, warn};
 use std::pin::Pin;
 use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::signal;
 use tokio_stream::wrappers::{IntervalStream, UnboundedReceiverStream};
 use tokio_stream::{Stream, StreamExt, StreamMap};
@@ -51,6 +52,7 @@ fn create_poll_stream() -> Pin<Box<dyn Stream<Item = Event> + Send>> {
     Box::pin(poll_stream.map(|_i| Event::Update))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::builder()
@@ -323,4 +325,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    println!("Example not currently supported for wasm");
 }

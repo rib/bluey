@@ -5,6 +5,7 @@ use bluey::session;
 use futures::FutureExt;
 use std::io::Write;
 use std::pin::Pin;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::signal;
 use tokio_stream::{Stream, StreamExt, StreamMap};
 
@@ -20,6 +21,7 @@ enum Event {
     Interrupt,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::builder()
@@ -86,4 +88,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     session.stop_scanning().await?;
 
     Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    println!("Example not currently supported for wasm");
 }
