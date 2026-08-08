@@ -904,6 +904,7 @@ impl State {
             match self.state {
                 BleState::Idle => {
                     if ui.button("Scan").clicked() {
+                        debug!("Start scanning...");
                         let _ = ble_tx.send(BleRequest::StartScanning);
                         self.state = BleState::Scanning;
                     }

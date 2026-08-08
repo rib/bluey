@@ -88,7 +88,7 @@ fn _main(event_loop: winit::event_loop::EventLoop<ui::Event>) {
         event_loop.create_proxy()
     )));
     ctx.set_request_repaint_callback(move |_info| {
-        log::debug!("Request Repaint Callback");
+        log::trace!("Request Repaint Callback");
         repaint_signal.0.lock().unwrap().send_event(ui::Event::RequestRedraw).ok();
     });
 
@@ -117,7 +117,7 @@ fn _main(event_loop: winit::event_loop::EventLoop<ui::Event>) {
     event_loop.run(move |event, event_loop| {
         event_loop.set_control_flow(ControlFlow::Wait);
 
-        log::debug!("handling winit event");
+        log::trace!("handling winit event");
 
         match (&mut window, event) {
             (None, Resumed) => {
@@ -135,7 +135,7 @@ fn _main(event_loop: winit::event_loop::EventLoop<ui::Event>) {
             }
             (_, UserEvent(ui::Event::RequestRedraw)) => {
                 if let Some(window) = window.as_ref() {
-                    log::debug!("Winit request redraw, user event");
+                    log::trace!("Winit request redraw, user event");
                     window.window.request_redraw();
                 }
             }
@@ -148,7 +148,7 @@ fn _main(event_loop: winit::event_loop::EventLoop<ui::Event>) {
                     window_id, event, ..
                 },
             ) if window.window.id() == window_id => {
-                log::debug!("Window Event: {event:?}");
+                log::trace!("Window Event: {event:?}");
 
                 let response = window.state.on_window_event(&window.window, &event);
                 // egui_winit probably shouldn't be returning repaint=true for RedrawRequested
@@ -237,7 +237,7 @@ fn main() {}
 
 #[cfg(not(target_os="android"))]
 fn main() {
-    env_logger::builder().filter_level(log::LevelFilter::Trace) // Default Log Level
+    env_logger::builder().filter_level(log::LevelFilter::Debug) // Default Log Level
         .filter(Some("naga"), log::LevelFilter::Warn)
         .filter(Some("wgpu"), log::LevelFilter::Warn)
         .parse_default_env()

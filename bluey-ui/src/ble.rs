@@ -127,6 +127,8 @@ impl BleService {
         ui_requests: tokio::sync::mpsc::UnboundedReceiver<BleRequest>,
         companion_chooser_request_code: Option<u32>) -> anyhow::Result<()> {
 
+        debug!("Starting Bluetooth Service...");
+
         #[cfg(target_os="android")]
         let session = {
             let ctx = ndk_context::android_context();
@@ -183,7 +185,9 @@ impl BleService {
 
         // Scan for a heart rate monitor to connect to...
         //
+        log::debug!("Waiting for bluetooth events...");
         while let Some((_, event)) = mainloop.next().await {
+            debug!("Bluetooth Service Event: {:?}", event);
             match event {
                 Event::UiRequest(req) => {
                     match req {
@@ -191,7 +195,7 @@ impl BleService {
                             match state {
                                 State::Idle => {
                                     let filter = session::Filter::new();
-                                    trace!("Starting scanning...");
+                                    debug!("Starting scanning...");
                                     session.start_scanning(filter).await?; // FIXME: don't quit service on error
                                     state = State::Scanning;
                                 }
@@ -203,7 +207,7 @@ impl BleService {
                         BleRequest::StopScanning => {
                             match state {
                                 State::Scanning => {
-                                    trace!("Stopping scanning...");
+                                    debug!("Stopping scanning...");
                                     session.stop_scanning().await?; // FIXME: don't quit service on error
                                     state = State::Idle;
                                 }
