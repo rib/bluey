@@ -10,7 +10,14 @@ buildscript {
 
 plugins {
     id 'com.android.library'
+    id 'maven-publish'
 }
+
+//def buildProfileSuffix = project.hasProperty('cargo.buildProfile') ? "-" + project.properties['cargo.buildProfile'] : ''
+//def pkgVersion = project.hasProperty('cargo.pkgVersion') ? project.properties['cargo.pkgVersion'] : "0.1"
+def localMaven = project.hasProperty('cargo.targetDir') ? file(project.properties['cargo.targetDir']) : null
+
+//def version = 0.1
 
 android {
     compileSdk 31
@@ -18,8 +25,8 @@ android {
     defaultConfig {
         minSdk 28
         targetSdk 31
-        versionCode 1
-        versionName "1.0"
+        // versionCode 1
+        // versionName 0.1
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -32,6 +39,41 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+publishing {
+    repositories {
+        if (localMaven) {
+            maven {
+                url = localMaven.toURI()
+            }
+        }
+/*
+        maven {
+            name = "GitHubPackages"
+            url = uri("https://maven.pkg.github.com/rib/bluey")
+            credentials {
+                username = project.findProperty("gpr.user") ?: System.getenv("GITHUB_USERNAME")
+                password = project.findProperty("gpr.key") ?: System.getenv("GITHUB_TOKEN")
+            }
+        }
+*/
+    }
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            mavenRelease(MavenPublication) {
+                groupId = 'co.bluey'
+                //artifactId = 'bluey-android' + buildProfileSuffix
+                artifactId = 'bluey-android'
+                version = 0.1
+
+                from components.release
+            }
+        }
     }
 }
 

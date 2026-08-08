@@ -1,0 +1,31 @@
+name: CI
+on:
+  push:
+    branches: [ maven-test ]
+
+jobs:
+   build:
+     runs-on: ubuntu-latest
+     steps:
+        - uses: actions/checkout@v2
+        - name: Set up Java
+          uses: actions/setup-java@v2
+          with:
+            java-version: '17'
+            distribution: 'temurin'
+            server-id: github
+            settings-path: ${{ github.workspace }}
+
+        - name: Setup Android SDK
+          uses: android-actions/setup-android@v2
+
+        - name: Build bluey-android.aar
+          working-directory: ./bluey/src/java
+          run: ./gradlew publishToMavenLocal
+
+        #- name: Publish bluey-android.aar
+        #  working-directory: ./bluey/src/java
+        #  env:
+        #    GITHUB_USERNAME: ${{ github.actor }}
+        #    GITHUB_TOKEN: ${{ github.token }}
+        #  run: ./gradlew publish

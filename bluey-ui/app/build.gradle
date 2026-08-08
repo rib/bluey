@@ -58,6 +58,7 @@ dependencies {
     // To use the Games Text Input Library
     //implementation "androidx.games:games-text-input:1.1.0"
 
-    implementation(name:'bluey-debug', ext:'aar')
+    //implementation(name:'bluey-debug', ext:'aar')
+    implementation 'co.bluey:android-bluey'
 }
 
