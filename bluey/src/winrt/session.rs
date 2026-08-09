@@ -864,6 +864,9 @@ impl BackendSession for WinrtSession {
     fn has_scan_permission(&self) -> bool {
         true // Windows doesn't require explicit scan permissions
     }
+    fn has_connect_permission(&self) -> bool {
+        true // Windows doesn't require explicit connect permissions
+    }
 
     async fn start_scanning(&self, filter: &Filter) -> Result<()> {
         trace!("winrt: start scanning");
